@@ -326,7 +326,7 @@ def run_scanner_loop():
             continue
 
         top_coins = []
-        for page in range(1, 3): 
+        for page in range(5, 7): 
             if not is_scanning: break
             url = f"{BASE_URL}/coins/markets"
             params = {"vs_currency": "usd", "order": "market_cap_desc", "per_page": 250, "page": page, "sparkline": "false"}
