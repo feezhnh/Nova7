@@ -126,7 +126,7 @@ def get_category_insight(categories):
         ) 
      
 # ==========================================
-# 5. PENJANA INLINE KEYBOARD DINAMIK (ELITE UI)
+# 5. PENJANA INLINE KEYBOARD (SISTEM 3: ULTRA LOW CAP 1000-1500)
 # ==========================================
 def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
     markup = InlineKeyboardMarkup(row_width=2) 
@@ -135,6 +135,7 @@ def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
     url = f"{BASE_URL}/coins/{coin_id}?localization=false&tickers=true&market_data=false&community_data=false&developer_data=false"
     categories = []
     chain_name = "Native Chain" 
+    asset_platform_id = ""
     
     try:
         res = requests.get(url, headers=headers)
@@ -142,68 +143,42 @@ def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
         categories = data.get("categories", [])
         
         asset_platform_id = data.get("asset_platform_id", "")
-        if asset_platform_id:
-            chain_name = asset_platform_id.replace("-", " ").title()
+        if asset_platform_id: chain_name = asset_platform_id.replace("-", " ").title()
 
         if not contract_address:
             platforms = data.get("platforms", {})
             if platforms: contract_address = list(platforms.values())[0]
 
-        # 💡 BARIS 1: UBAH NAMA KEPADA "ℹ️ Info"
-        news_url = f"https://news.google.com/search?q={coin_name}+crypto+news"
-        cg_url = f"https://www.coingecko.com/en/coins/{coin_id}"
-        markup.row(InlineKeyboardButton("📰 News", url=news_url), InlineKeyboardButton("ℹ️ Info", url=cg_url))
+        # 1. ENJIN HYPE & ALIRAN WANG MUTLAK
+        cashtag_url = f"https://twitter.com/search?q=%24{symbol}&f=live"
+        dex_url = f"https://dexscreener.com/search?q={contract_address}" if contract_address else f"https://dexscreener.com/search?q={symbol}"
+        markup.row(InlineKeyboardButton("🐦 Cashtag Live", url=cashtag_url), InlineKeyboardButton("📊 DexScreener", url=dex_url))
         
-        # BARIS 2: SOSIAL
-        links = data.get("links", {})
-        row_social = []
-        if links.get("telegram_channel_identifier"):
-            row_social.append(InlineKeyboardButton("✈️ Telegram", url=f"https://t.me/{links['telegram_channel_identifier']}"))
-        if links.get("twitter_screen_name"):
-            row_social.append(InlineKeyboardButton("🐦 X", url=f"https://twitter.com/{links['twitter_screen_name']}"))
-        if row_social: markup.row(*row_social)
+        # 2. DEX SNIPER (KEUTAMAAN PERTAMA UNTUK EKSEKUSI PANTAS)
+        if contract_address:
+            platform_id_lower = asset_platform_id.lower() if asset_platform_id else ""
+            if "solana" in platform_id_lower:
+                markup.row(InlineKeyboardButton("🤖 Fast Snipe on BonkBot", url=f"https://t.me/bonkbot_bot?start=ref_krypton_{contract_address}"))
+            else:
+                markup.row(InlineKeyboardButton("🦅 Fast Snipe on Maestro", url=f"https://t.me/MaestroSniperBot?start={contract_address}-krypton"))
 
-        # BARIS 3: ALATAN ALPHA
-        viral_url = f"https://lunarcrush.com/coins/{symbol}"
-        bubble_url = f"https://bubblemaps.io/" 
-        markup.row(InlineKeyboardButton("🔥 LunarCrush", url=viral_url), InlineKeyboardButton("🌐 Bubblemaps", url=bubble_url))
-        
-        # 💡 LOGIK KING OF THE HILL (PEMBUNUHAN BUTANG LEBIHAN)
+        # 3. CEX SOKONGAN (BINANCE DIBUANG DARI RADAR, HANYA BITGET/GATE)
         tickers = data.get("tickers", [])
-        binance_url = bitget_url = gate_url = None
-        
+        bitget_url = gate_url = None
         for t in tickers:
             market_name = t["market"]["name"].lower()
             trade_url = t.get("trade_url")
             if not trade_url: continue 
             
-            if "binance" in market_name and not binance_url: binance_url = trade_url
-            elif "bitget" in market_name and not bitget_url: bitget_url = trade_url
+            if "bitget" in market_name and not bitget_url: bitget_url = trade_url
             elif "gate" in market_name and not gate_url: gate_url = trade_url
         
-        # PILIH 1 CEX TERBAIK SAHAJA SECARA HIERARKI
-        top_cex_button = None
-        if binance_url:
-            top_cex_button = InlineKeyboardButton("🟨 Trade on Binance", url=binance_url)
-        elif bitget_url:
-            top_cex_button = InlineKeyboardButton("🟦 Trade on Bitget", url=bitget_url)
-        elif gate_url:
-            top_cex_button = InlineKeyboardButton("🟥 Trade on Gate.io", url=gate_url)
+        if bitget_url: markup.row(InlineKeyboardButton("🟦 Trade on Bitget", url=bitget_url))
+        elif gate_url: markup.row(InlineKeyboardButton("🟥 Trade on Gate.io", url=gate_url))
 
-        # BARIS 4: KEPUTUSAN EKSEKUSI (CEX vs DEX)
-        if top_cex_button:
-            # Jika ada bursa gergasi, jadikan butang lebar (Full-width) dan bunuh DEX
-            markup.row(top_cex_button)
-        elif contract_address:
-            # Jika TIADA bursa gergasi, baru panggil Sniper Bot untuk DEX
-            bonk_url = f"https://t.me/bonkbot_bot?start=ref_krypton_{contract_address}"
-            maestro_url = f"https://t.me/MaestroSniperBot?start={contract_address}-krypton"
-            markup.row(InlineKeyboardButton("🤖 BonkBot", url=bonk_url), InlineKeyboardButton("🦅 Maestro", url=maestro_url))
-
-    except Exception as e: print(f"[ERROR LOG] Ralat keyboard: {e}")
+    except Exception as e: print(f"[ERROR LOG] Ralat keyboard S3: {e}")
 
     return markup, categories, contract_address, chain_name
-
 # ==========================================
 # 6. ENJIN SIGNAL TELEGRAM (CLINICAL EXECUTION UI)
 # ==========================================
