@@ -31,7 +31,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Enjin Krypton V1 Aktif & Stabil 🐋"
+    return "I'M NOVA7 Aktif & Stabil 🐋"
 
 # ==========================================
 # 3. INDIKATOR TEKNIKAL & MATEMATIK [LOCKED]
@@ -478,7 +478,7 @@ def manual_ca_check(message):
 def graceful_shutdown(*args):
     # OFFLINE MESEJ KE ADMIN SAHAJA
     if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
-        try: bot.send_message(ADMIN_CHAT_ID, "🔴 <b>[OFFLINE] KRYPTON DISCONNECTED.</b> Render shutting down.", parse_mode="HTML")
+        try: bot.send_message(ADMIN_CHAT_ID, "🔴 <b>[OFFLINE] NOVA7 DISCONNECTED.</b> Render shutting down.", parse_mode="HTML")
         except: pass
     sys.exit(0)
 
@@ -488,7 +488,7 @@ if __name__ == "__main__":
     
     # BOOT UP MESEJ KE ADMIN SAHAJA
     if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
-        try: bot.send_message(ADMIN_CHAT_ID, "🟢 <b>HELLO, KRYPTON V1 NOW ACTIVE.</b>\nLink to Render established.", parse_mode="HTML")
+        try: bot.send_message(ADMIN_CHAT_ID, "🟢 <b>HELLO, NOVA7 IS NOW ACTIVE.</b>\nLink to Render established.", parse_mode="HTML")
         except: pass
 
     threading.Thread(target=run_scanner_loop, daemon=True).start()
