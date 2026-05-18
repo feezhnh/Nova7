@@ -256,7 +256,28 @@ def dispatch_signal(chat_id, coin_name, symbol, rank, ath_change, vol_multiplier
 
     
     try:
-        bot.send_message(chat_id, msg, reply_markup=markup, disable_web_page_preview=True)
+        # Hantar mesej dan tangkap ID
+        sent_msg = bot.send_message(chat_id, msg, reply_markup=markup, disable_web_page_preview=True)
+        
+        # 💡 SIMPAN DATA UNTUK JEJAKAN ENJIN FOMO
+        import json
+        trade_log = {
+            "coin_id": coin_id,
+            "symbol": safe_sym,
+            "message_id": sent_msg.message_id,
+            "tp1": tp1, "tp2": tp2, "tp3": tp3, "sl": sl,
+            "status": "TRACKING"
+        }
+        
+        trades = {}
+        if os.path.exists("active_trades.json"):
+            try:
+                with open("active_trades.json", "r") as f: trades = json.load(f)
+            except: trades = {}
+            
+        trades[str(sent_msg.message_id)] = trade_log
+        with open("active_trades.json", "w") as f: json.dump(trades, f, indent=4)
+            
     except Exception as e:
         print(f"[ERROR LOG] Mesej Telegram gagal dihantar: {e}")
 
