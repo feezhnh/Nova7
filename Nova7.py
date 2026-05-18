@@ -280,6 +280,70 @@ def dispatch_signal(chat_id, coin_name, symbol, rank, ath_change, vol_multiplier
             
     except Exception as e:
         print(f"[ERROR LOG] Mesej Telegram gagal dihantar: {e}")
+     
+     # ==========================================
+# 6.5 ENJIN TRACKER FOMO (REAL-TIME AUTO REPLY)
+# ==========================================
+def run_trade_tracker_loop():
+    import json
+    while True:
+        time.sleep(300) # Semak setiap 5 minit untuk jimat kuota API
+        if not TELEGRAM_CHAT_ID or not os.path.exists("active_trades.json"): continue
+        
+        try:
+            with open("active_trades.json", "r") as f: trades = json.load(f)
+        except: continue
+        
+        # Tapis hanya koin yang aktif
+        active_items = {k: v for k, v in trades.items() if v["status"] not in ["COMPLETED", "STOP_LOSS"]}
+        if not active_items: continue
+        
+        # Panggilan API Pukal (Batch Call)
+        coin_ids = list(set([v["coin_id"] for v in active_items.values()]))
+        ids_str = ",".join(coin_ids)
+        
+        headers = {"x-cg-demo-api-key": CG_API_KEY} if CG_API_KEY else {}
+        try:
+            res = requests.get(f"{BASE_URL}/simple/price?ids={ids_str}&vs_currencies=usd", headers=headers)
+            if res.status_code != 200: continue
+            current_prices = res.json()
+        except: continue
+        
+        updated = False
+        for msg_id, trade in active_items.items():
+            c_id = trade["coin_id"]
+            if c_id not in current_prices: continue
+            
+            price_now = current_prices[c_id]["usd"]
+            status = trade["status"]
+            sym = trade["symbol"]
+            
+            reply_text = ""
+            new_status = status
+            
+            if price_now <= trade["sl"]:
+                reply_text = f"🛑 <b>{sym} — STOP LOSS HIT</b>\nProteksi modal diaktifkan pada harga <code>${price_now:.6f}</code>. Sila keluar dari pasaran."
+                new_status = "STOP_LOSS"
+            elif price_now >= trade["tp3"] and status != "TP2_HIT":
+                reply_text = f"👑 <b>{sym} — TP3 MAX TARGET HIT!</b>\nMoonshot selesai sempurna di harga <code>${price_now:.6f}</code>! 100% sasaran hancur ditewaskan. 🎉🚀"
+                new_status = "COMPLETED"
+            elif price_now >= trade["tp2"] and status not in ["TP2_HIT", "COMPLETED"]:
+                reply_text = f"🔥 <b>{sym} — TARGET TP2 ACHIEVED!</b>\nGolden Pocket ditembus pada harga <code>${price_now:.6f}</code>. Poketkan 50% profit, biarkan baki berjalan 'Risk-Free'!"
+                new_status = "TP2_HIT"
+            elif price_now >= trade["tp1"] and status == "TRACKING":
+                reply_text = f"✅ <b>{sym} — TARGET TP1 SECURED!</b>\nLantunan pertama disahkan pada harga <code>${price_now:.6f}</code>. Alihkan Stop Loss kau ke harga Entry (Break-Even) SEKARANG! ⚡"
+                new_status = "TP1_HIT"
+                
+            if reply_text:
+                try:
+                    bot.send_message(TELEGRAM_CHAT_ID, reply_text, reply_to_message_id=int(msg_id), parse_mode="HTML")
+                    trades[msg_id]["status"] = new_status
+                    updated = True
+                except Exception as e:
+                    print(f"[ERROR LOG] Gagal hantar reply tracker: {e}")
+                    
+        if updated:
+            with open("active_trades.json", "w") as f: json.dump(trades, f, indent=4)
 
 # ==========================================
 # 7. ENJIN PENGIMBASAN (MACRO DEFENSE, RSI BYPASS & COOLDOWN)
@@ -487,6 +551,7 @@ if __name__ == "__main__":
         try: bot.send_message(ADMIN_CHAT_ID, "🟢 <b>HELLO, NOVA7 IS NOW ACTIVE.</b>\nLink to Render established.", parse_mode="HTML")
         except: pass
 
+    threading.Thread(target=run_trade_tracker_loop, daemon=True).start()
     threading.Thread(target=run_scanner_loop, daemon=True).start()
     threading.Thread(target=bot.infinity_polling, daemon=True).start()
     
