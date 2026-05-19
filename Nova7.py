@@ -174,20 +174,27 @@ def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
             else:
                 markup.row(InlineKeyboardButton("🦅 Fast Snipe on Maestro", url=f"https://t.me/MaestroSniperBot?start={contract_address}-krypton"))
 
-        # 💡 BARIS 3: CEX SOKONGAN (HANYA BITGET/GATE JIKA ADA)
+        # 💡 BARIS 3: CEX SOKONGAN (BINANCE SEBAGAI RAJA, DIIKUTI BITGET & GATE)
         tickers = data.get("tickers", [])
-        bitget_url = gate_url = None
+        has_binance = has_bitget = has_gate = False
+        
         for t in tickers:
             market_name = t["market"]["name"].lower()
             target_coin = t.get("target", "").upper()
             
-            # Paksaan Deep-Link
+            # Pastikan pasangan dagangan adalah USDT untuk ketepatan
             if "USDT" in target_coin or t.get("target") == "USDT":
-                if "bitget" in market_name: bitget_url = f"https://www.bitget.com/spot/{symbol.upper()}USDT"
-                elif "gate" in market_name: gate_url = f"https://www.gate.io/trade/{symbol.upper()}_USDT"
+                if "binance" in market_name: has_binance = True
+                elif "bitget" in market_name: has_bitget = True
+                elif "gate" in market_name: has_gate = True
         
-        if bitget_url: markup.row(InlineKeyboardButton("🟦 Trade on Bitget", url=bitget_url))
-        elif gate_url: markup.row(InlineKeyboardButton("🟥 Trade on Gate.io", url=gate_url))
+        # BINA URL SENDIRI MENGIKUT FORMAT RASMI BURSA (PILIHAN TERBAIK SAHAJA)
+        if has_binance:
+            markup.row(InlineKeyboardButton("🟨 Trade on Binance", url=f"https://www.binance.com/en/trade/{symbol.upper()}_USDT"))
+        elif has_bitget:
+            markup.row(InlineKeyboardButton("🟦 Trade on Bitget", url=f"https://www.bitget.com/spot/{symbol.upper()}USDT"))
+        elif has_gate:
+            markup.row(InlineKeyboardButton("🟥 Trade on Gate.io", url=f"https://www.gate.io/trade/{symbol.upper()}_USDT"))
          
     except Exception as e: 
         admin_log(f"Ralat Keyboard / UI ({symbol})", e)
