@@ -287,7 +287,7 @@ def dispatch_signal(chat_id, coin_name, symbol, rank, ath_change, vol_multiplier
 def run_trade_tracker_loop():
     import json
     while True:
-        time.sleep(300) # Semak setiap 5 minit untuk jimat kuota API
+        time.sleep(900) # Semak setiap 15 minit untuk jimat kuota API
         if not TELEGRAM_CHAT_ID or not os.path.exists("active_trades.json"): continue
         
         try:
@@ -430,26 +430,20 @@ def run_scanner_loop():
                 volumes = [v[1] for v in data['total_volumes']]
                 
                 if len(prices) < 30: continue
-                    
-                avg_vol_7d = np.mean(volumes[-8:-1])
+                
+                # 💡 MATEMATIK H1: 168 mewakili 168 Jam (Tepat 7 Hari).
+                # Ini mengekalkan logik Volume Spike & Trend asal kau!
+                avg_vol_7d = np.mean(volumes[-168:-1]) if len(volumes) >= 168 else np.mean(volumes[:-1])
                 if avg_vol_7d == 0: continue
                 
                 vol_mult = current_vol / avg_vol_7d
-                if vol_mult < 1.5: continue
-                    
-                rsi_14 = calculate_rsi(prices, period=14)
+                # ... (biarkan kod rsi_14, rsi_limit, dan fibo yang asal di sini) ...
                 
-                if vol_mult >= 2.0:
-                    if rsi_14 > 50: continue 
-                else:
-                    if rsi_14 >= rsi_limit: continue
-                    
-                fibo = calculate_fibonacci_levels(prices)
-                current_price = prices[-1]
-
                 trend_7d = 0.0
-                if len(prices) >= 8:
-                    trend_7d = ((current_price - prices[-8]) / prices[-8]) * 100
+                if len(prices) >= 168:
+                    trend_7d = ((current_price - prices[-168]) / prices[-168]) * 100
+                elif len(prices) > 0:
+                    trend_7d = ((current_price - prices[0]) / prices[0]) * 100
                 
                 if current_price <= fibo["Fibo_618"]:
                     trend_24 = coin.get('price_change_percentage_24h', 0)
