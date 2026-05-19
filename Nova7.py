@@ -406,7 +406,7 @@ def run_scanner_loop():
             continue
 
         top_coins = []
-        for page in range(1, 3): 
+        for page in range(5, 7): 
             if not is_scanning: break
             url = f"{BASE_URL}/coins/markets"
             params = {"vs_currency": "usd", "order": "market_cap_desc", "per_page": 250, "page": page, "sparkline": "false"}
@@ -482,7 +482,7 @@ def run_scanner_loop():
                 
         if is_scanning:
             if ADMIN_CHAT_ID:
-                try: bot.send_message(ADMIN_CHAT_ID, "⏳ <b>[STANDBY]</b> Siklus makro selesai. Enjin disejukkan (6 Jam).", parse_mode="HTML")
+                try: bot.send_message(ADMIN_CHAT_ID, "⏳ <b>[STANDBY]</b>Scanning makro Nova7 selesai. Engine Cooling (6Hrs).", parse_mode="HTML")
                 except: pass
             time.sleep(21600)
 
@@ -491,13 +491,13 @@ def run_scanner_loop():
 # ==========================================
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    bot.reply_to(message, "⚡ <b>KRYPTON V1 AKTIF!</b>\nArahan tersedia: <code>/ca</code>, <code>/scan</code>, <code>/stop</code>", parse_mode="HTML")
+    bot.reply_to(message, "⚡ <b>Nova7 DiaktifkaF!</b>\nArahan tersedia: <code>/ca</code>, <code>/scan</code>, <code>/stop</code>", parse_mode="HTML")
 
 @bot.message_handler(commands=['scan'])
 def start_scan_cmd(message):
     global is_scanning
     is_scanning = True
-    bot.reply_to(message, "✅ <b>Enjin Krypton Diaktifkan.</b> Bot sedang merempuh pasaran.", parse_mode="HTML")
+    bot.reply_to(message, "✅ <b>Engine Nova7 Diaktifkan.</b> Bot sedang merempuh pasaran.", parse_mode="HTML")
 
 @bot.message_handler(commands=['stop'])
 def stop_scan_cmd(message):
@@ -558,7 +558,7 @@ def manual_ca_check(message):
 def graceful_shutdown(*args):
     # OFFLINE MESEJ KE ADMIN SAHAJA
     if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
-        try: bot.send_message(ADMIN_CHAT_ID, "🔴 <b>[OFFLINE] KRYPTON DISCONNECTED.</b> Render shutting down.", parse_mode="HTML")
+        try: bot.send_message(ADMIN_CHAT_ID, "🔴 <b>[OFFLINE] NOVA7 DISCONNECTED.</b> Render shutting down.", parse_mode="HTML")
         except: pass
     sys.exit(0)
 
@@ -568,7 +568,7 @@ if __name__ == "__main__":
     
     # BOOT UP MESEJ KE ADMIN SAHAJA
     if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
-        try: bot.send_message(ADMIN_CHAT_ID, "🟢 <b>HELLO, KRYPTON V1 NOW ACTIVE.</b>\nLink to Render established.", parse_mode="HTML")
+        try: bot.send_message(ADMIN_CHAT_ID, "🟢 <b>HELLO, NOVA7  NOW ACTIVE.</b>\nLink to Render established.", parse_mode="HTML")
         except: pass
 
     # 💡 HIDUPKAN ENJIN AUTOMATIK DI SINI
