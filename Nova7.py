@@ -260,7 +260,6 @@ def dispatch_signal(chat_id, coin_name, symbol, rank, ath_change, vol_multiplier
         "🛠️ <b>ALGO TRADE SETUP (Chart: D1)</b>\n"
         f"🔸 <b>Entry Zone:</b> <code>${current_price:.6f}</code> - <code>${fibo['Fibo_786']:.6f}</code>\n"
         f"🛑 <b>Stop Loss:</b> <code>${sl:.6f}</code>\n\n"
-        "........................................................\n"
         "🎯 <b>Targets:</b>\n"
         f"➡️ <b>TP1:</b> <code>${tp1:.6f}</code>\n"
         f"➡️ <b>TP2:</b> <code>${tp2:.6f}</code>\n"
