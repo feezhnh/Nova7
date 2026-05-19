@@ -415,7 +415,7 @@ def run_scanner_loop():
                 current_vol = coin.get('total_volume')
                 
                 if ath_change is None or ath_change > -50: continue
-                if current_vol is None or current_vol < 500000: continue
+                if current_vol is None or current_vol < 250000: continue
 
                 hist_url = f"{BASE_URL}/coins/{coin_id}/market_chart"
                 # 💡 ALGORITMA SNIPER H1: Aksi harga 7 hari sangat sensitif terhadap perubahan pantas
@@ -510,7 +510,8 @@ def manual_ca_check(message):
         vol_24 = market_res.get('total_volume', 0)
         
         hist_url = f"{BASE_URL}/coins/{coin_id}/market_chart"
-        hist_data = requests.get(hist_url, params={"vs_currency": "usd", "days": "30", "interval": "daily"}, headers=headers).json()
+        # 💡 ALGORITMA SNIPER H1: Selaraskan /ca manual dengan enjin automatik (7 Hari)
+        hist_data = requests.get(hist_url, params={"vs_currency": "usd", "days": "7"}, headers=headers).json()
         prices = [p[1] for p in hist_data['prices']]
         
         rsi_14 = calculate_rsi(prices, 14) if len(prices) >= 30 else 0.0
