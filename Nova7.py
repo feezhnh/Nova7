@@ -515,11 +515,13 @@ def manual_ca_check(message):
         
         rsi_14 = calculate_rsi(prices, 14) if len(prices) >= 30 else 0.0
         fibo = calculate_fibonacci_levels(prices) if len(prices) >= 30 else {"Fibo_100": current_price, "Fibo_786": current_price, "Fibo_618": current_price, "Fibo_0": current_price}
-        
-        # MATEMATIK BARU: 1W (7D) Drop
+      
+        # 💡 MATEMATIK H1: 1W (7D) Drop diselaraskan ke 168 Jam
         trend_7d = 0.0
-        if len(prices) >= 8:
-            trend_7d = ((current_price - prices[-8]) / prices[-8]) * 100
+        if len(prices) >= 168:
+            trend_7d = ((current_price - prices[-168]) / prices[-168]) * 100
+        elif len(prices) > 0:
+            trend_7d = ((current_price - prices[0]) / prices[0]) * 100
 
         dispatch_signal(TELEGRAM_CHAT_ID, coin_name, symbol, rank, ath_change, 1.0, rsi_14, current_price, fibo, coin_id, trend_24, vol_24, trend_7d, passed_ca=passed_address)
         bot.reply_to(message, "✅ <b>Analisis Selesai!</b>", parse_mode="HTML")
