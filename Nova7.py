@@ -371,7 +371,7 @@ def run_scanner_loop():
                 if ADMIN_CHAT_ID:
                     try: bot.send_message(ADMIN_CHAT_ID, f"⚠️ <b>[DEFENSE MODE AKTIF]</b> Makro BTC sedang mengalami pendarahan berisiko tinggi (<code>{btc_trend_24h:.2f}%</code>). KRYPTON V1 membekukan operasi isyarat Altcoin untuk memelihara modal. Siklus ditunda 6 Jam.", parse_mode="HTML")
                     except: pass
-                time.sleep(21600) 
+                time.sleep(3600) 
                 continue
 
             global_res = requests.get(f"{BASE_URL}/global", headers=headers).json()
@@ -465,7 +465,7 @@ def run_scanner_loop():
             if ADMIN_CHAT_ID:
                 try: bot.send_message(ADMIN_CHAT_ID, "⏳ <b>[STANDBY]</b> Siklus makro selesai. Enjin disejukkan (6 Jam).", parse_mode="HTML")
                 except: pass
-            time.sleep(21600)
+            time.sleep(3600)
 
 # # ==========================================
 # 8. TELEGRAM COMMAND HANDLERS
