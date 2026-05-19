@@ -31,7 +31,18 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Enjin Krypton V1 Aktif & Stabil 🐋"
+    return "Engine Nova7 Aktif & Stabil 🐋"
+
+# ==========================================
+# 2.5 TELEGRAM GOD MODE (SYSTEM LOGGING)
+# ==========================================
+def admin_log(context, error):
+    if not ADMIN_CHAT_ID: return
+    try:
+        msg = f"☢️ <b>[NOVA7 ERROR] {context}</b>\n<code>{str(error)}</code>"
+        bot.send_message(ADMIN_CHAT_ID, msg, parse_mode="HTML")
+    except:
+        pass
 
 # ==========================================
 # 3. INDIKATOR TEKNIKAL & MATEMATIK [LOCKED]
@@ -126,7 +137,7 @@ def get_category_insight(categories):
         ) 
      
 # ==========================================
-# 5. PENJANA INLINE KEYBOARD (NOVA - ELITE MINIMALIST)
+# 5. PENJANA INLINE KEYBOARD (NOVA - THE PERFECT DEGEN)
 # ==========================================
 def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
     markup = InlineKeyboardMarkup(row_width=2) 
@@ -149,10 +160,11 @@ def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
             platforms = data.get("platforms", {})
             if platforms: contract_address = list(platforms.values())[0]
 
-        # 💡 BARIS 1: THE ALPHA TOOLS (MINIMALIST)
-        panic_url = f"https://cryptopanic.com/news?search={symbol}"
+        # 💡 BARIS 1: ENJIN HYPE & ALIRAN WANG (CASHTAG LIVE & DEXSCREENER)
+        # (CryptoPanic DIMATIKAN SEPENUHNYA UNTUK NOVA)
+        cashtag_url = f"https://twitter.com/search?q=%24{symbol}&f=live"
         dex_url = f"https://dexscreener.com/search?q={contract_address}" if contract_address else f"https://dexscreener.com/search?q={symbol}"
-        markup.row(InlineKeyboardButton("🚨 CryptoPanic", url=panic_url), InlineKeyboardButton("📊 DexScreener", url=dex_url))
+        markup.row(InlineKeyboardButton("🐦 Cashtag Live", url=cashtag_url), InlineKeyboardButton("📊 DexScreener", url=dex_url))
         
         # 💡 BARIS 2: DEX SNIPER (KEUTAMAAN PERTAMA UNTUK EKSEKUSI PANTAS)
         if contract_address:
@@ -162,14 +174,14 @@ def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
             else:
                 markup.row(InlineKeyboardButton("🦅 Fast Snipe on Maestro", url=f"https://t.me/MaestroSniperBot?start={contract_address}-krypton"))
 
-        # 💡 BARIS 3: CEX SOKONGAN (BINANCE DIBUANG, HANYA BITGET/GATE)
+        # 💡 BARIS 3: CEX SOKONGAN (HANYA BITGET/GATE JIKA ADA)
         tickers = data.get("tickers", [])
         bitget_url = gate_url = None
         for t in tickers:
             market_name = t["market"]["name"].lower()
             target_coin = t.get("target", "").upper()
             
-            # Paksaan Deep-Link untuk Gate & Bitget
+            # Paksaan Deep-Link
             if "USDT" in target_coin or t.get("target") == "USDT":
                 if "bitget" in market_name: bitget_url = f"https://www.bitget.com/spot/{symbol.upper()}USDT"
                 elif "gate" in market_name: gate_url = f"https://www.gate.io/trade/{symbol.upper()}_USDT"
@@ -178,6 +190,12 @@ def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
         elif gate_url: markup.row(InlineKeyboardButton("🟥 Trade on Gate.io", url=gate_url))
 
     except Exception as e: print(f"[ERROR LOG] Ralat keyboard NOVA: {e}")
+
+    return markup, categories, contract_address, chain_name
+
+    except Exception as e: 
+        admin_log(f"Ralat Keyboard / UI ({symbol})", e)
+        print(f"[ERROR LOG] Ralat keyboard: {e}")
 
     return markup, categories, contract_address, chain_name
 
@@ -261,6 +279,7 @@ def dispatch_signal(chat_id, coin_name, symbol, rank, ath_change, vol_multiplier
     try:
         bot.send_message(chat_id, msg, reply_markup=markup, disable_web_page_preview=True)
     except Exception as e:
+        admin_log(f"Gagal hantar signal {symbol}", e)
         print(f"[ERROR LOG] Mesej Telegram gagal dihantar: {e}")
 
 # ==========================================
@@ -371,6 +390,7 @@ def run_scanner_loop():
             print(f"[GLOBAL PULSE] BTC.D: {btc_dominance:.2f}% | Had ketat RSI dikunci pada: {rsi_limit}")
             
         except Exception as e:
+            admin_log("Ralat API Cuaca Makro (CoinGecko)", e)
             print(f"[ERROR LOG] Ralat Cuaca Makro: {e}")
             time.sleep(60)
             continue
