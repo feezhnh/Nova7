@@ -418,7 +418,8 @@ def run_scanner_loop():
                 if current_vol is None or current_vol < 500000: continue
 
                 hist_url = f"{BASE_URL}/coins/{coin_id}/market_chart"
-                hist_res = requests.get(hist_url, params={"vs_currency": "usd", "days": "30", "interval": "daily"}, headers=headers)
+                # 💡 ALGORITMA SNIPER H1: Aksi harga 7 hari sangat sensitif terhadap perubahan pantas
+                hist_res = requests.get(hist_url, params={"vs_currency": "usd", "days": "7"}, headers=headers)
                 
                 if hist_res.status_code != 200:
                     time.sleep(2)
