@@ -126,7 +126,7 @@ def get_category_insight(categories):
         ) 
      
 # ==========================================
-# 5. PENJANA INLINE KEYBOARD DINAMIK (UNIVERSAL & AUTO-HIDE)
+# 5. PENJANA INLINE KEYBOARD (SISTEM 3: ULTRA LOW CAP UNIVERSAL)
 # ==========================================
 def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
     markup = InlineKeyboardMarkup(row_width=2) 
@@ -143,28 +143,27 @@ def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
         categories = data.get("categories", [])
         
         asset_platform_id = data.get("asset_platform_id", "")
-        if asset_platform_id:
-            chain_name = asset_platform_id.replace("-", " ").title()
+        if asset_platform_id: chain_name = asset_platform_id.replace("-", " ").title()
 
         if not contract_address:
             platforms = data.get("platforms", {})
             if platforms: contract_address = list(platforms.values())[0]
 
-        # 💡 BARIS 1: ENJIN SENTIMEN (Sentiasa ada kerana ID/Symbol wajib wujud)
+        # 💡 BARIS 1: ENJIN SENTIMEN & INFO ASAS (Sentiasa Wujud)
         panic_url = f"https://cryptopanic.com/news?search={symbol}"
         cg_url = f"https://www.coingecko.com/en/coins/{coin_id}"
         markup.row(InlineKeyboardButton("🚨 CryptoPanic", url=panic_url), InlineKeyboardButton("ℹ️ Info", url=cg_url))
         
-        # 💡 BARIS 2: SOSIAL & KOMUNITI (SEMBUNYI JIKA TIADA REKOD)
+        # 💡 BARIS 2: SOSIAL & KOMUNITI RASMI (AUTO-HIDE JIKA TIADA REKOD)
         links = data.get("links", {})
         row_social = []
         if links.get("telegram_channel_identifier"):
             row_social.append(InlineKeyboardButton("✈️ Telegram", url=f"https://t.me/{links['telegram_channel_identifier']}"))
         if links.get("twitter_screen_name"):
             row_social.append(InlineKeyboardButton("🐦 X", url=f"https://twitter.com/{links['twitter_screen_name']}"))
-        if row_social: markup.row(*row_social) # Hanya bina baris jika ada butang
+        if row_social: markup.row(*row_social)
 
-        # 💡 BARIS 3: CASHTAG (Sentiasa ada) & DEXSCREENER (SEMBUNYI JIKA TIADA CA)
+        # 💡 BARIS 3: CASHTAG LIVE (HYPE) & DEXSCREENER (AUTO-HIDE DEXSCREENER JIKA TIADA CA)
         cashtag_url = f"https://twitter.com/search?q=%24{symbol}&f=live"
         row_hype = [InlineKeyboardButton("🐦 Cashtag Live", url=cashtag_url)]
         if contract_address:
@@ -172,43 +171,36 @@ def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
             row_hype.append(InlineKeyboardButton("📊 DexScreener", url=dex_url))
         markup.row(*row_hype)
         
-        # 💡 BARIS 4: CEX KING OF THE HILL (PAKSAAN DEEP-LINK USDT & SEMBUNYI JIKA TIADA)
+        # 💡 BARIS 4: DEX SNIPER BOT (KEUTAMAAN TINGGI - AUTO-HIDE JIKA TIADA CA + NAMA REFERRAL NEUTRAL)
+        if contract_address:
+            platform_id_lower = asset_platform_id.lower() if asset_platform_id else ""
+            if "solana" in platform_id_lower:
+                bonk_url = f"https://t.me/bonkbot_bot?start=ref_sniper_{contract_address}"
+                markup.row(InlineKeyboardButton("🤖 Fast Snipe on BonkBot", url=bonk_url))
+            else:
+                maestro_url = f"https://t.me/MaestroSniperBot?start={contract_address}-sniper"
+                markup.row(InlineKeyboardButton("🦅 Fast Snipe on Maestro", url=maestro_url))
+
+        # 💡 BARIS 5: CEX SOKONGAN (⚠️ BINANCE DIBUANG MUTLAK, HANYA BITGET/GATE DEEP-LINK & AUTO-HIDE)
         tickers = data.get("tickers", [])
-        has_binance = has_bitget = has_gate = False
+        has_bitget = has_gate = False
         
         for t in tickers:
             market_name = t["market"]["name"].lower()
             target_coin = t.get("target", "").upper()
             
-            # Tapis hanya pasangan USDT untuk ketepatan pautan CEX
+            # Tapis hanya pasangan USDT untuk ketepatan pembinaan pautan
             if "USDT" in target_coin or t.get("target") == "USDT":
-                if "binance" in market_name: has_binance = True
-                elif "bitget" in market_name: has_bitget = True
+                if "bitget" in market_name: has_bitget = True
                 elif "gate" in market_name: has_gate = True
         
-        # BINA PAUTAN TERUS (DIRECT DEEP-LINK)
-        if has_binance:
-            markup.row(InlineKeyboardButton("🟨 Trade on Binance", url=f"https://www.binance.com/en/trade/{symbol.upper()}_USDT"))
-        elif has_bitget:
+        # BINA PAUTAN TERUS (DEEP-LINK CEX)
+        if has_bitget:
             markup.row(InlineKeyboardButton("🟦 Trade on Bitget", url=f"https://www.bitget.com/spot/{symbol.upper()}USDT"))
         elif has_gate:
             markup.row(InlineKeyboardButton("🟥 Trade on Gate.io", url=f"https://www.gate.io/trade/{symbol.upper()}_USDT"))
 
-        # 💡 BARIS 5: DEX SNIPER (SEMBUNYI JIKA TIADA CA & GUNA NAMA NEUTRAL)
-        if contract_address:
-            platform_id_lower = asset_platform_id.lower() if asset_platform_id else ""
-            
-            # Jika ia koin Solana, panggil raja Solana (BonkBot)
-            if "solana" in platform_id_lower:
-                bonk_url = f"https://t.me/bonkbot_bot?start=ref_sniper_{contract_address}"
-                markup.row(InlineKeyboardButton("🤖 Trade on BonkBot", url=bonk_url))
-            
-            # Jika ia rantaian lain (ETH, Base, BSC), panggil Maestro
-            else:
-                maestro_url = f"https://t.me/MaestroSniperBot?start={contract_address}-sniper"
-                markup.row(InlineKeyboardButton("🦅 Trade on Maestro", url=maestro_url))
-
-    except Exception as e: print(f"[ERROR LOG] Ralat keyboard: {e}")
+    except Exception as e: print(f"[ERROR LOG] Ralat keyboard S3: {e}")
 
     return markup, categories, contract_address, chain_name
 
@@ -277,14 +269,15 @@ def dispatch_signal(chat_id, coin_name, symbol, rank, ath_change, vol_multiplier
         "🛠️ <b>ALGO TRADE SETUP (Chart: D1)</b>\n"
         f"🔸 <b>Entry Zone:</b> <code>${current_price:.6f}</code> - <code>${fibo['Fibo_786']:.6f}</code>\n"
         f"🛑 <b>Stop Loss:</b> <code>${sl:.6f}</code>\n\n"
+        "........................................................\n"
         "🎯 <b>Targets:</b>\n"
         f"➡️ <b>TP1:</b> <code>${tp1:.6f}</code>\n"
         f"➡️ <b>TP2:</b> <code>${tp2:.6f}</code>\n"
         f"➡️ <b>TP3:</b> <code>${tp3:.6f}</code>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        "........................................................\n"
         f"💼 <b>Capital Allocation:</b> {risk_tier}\n"
         "⚡ <b>Execution Protocol:</b> Pindahkan SL ke harga Entry (Break-Even) sebaik TP1 dicapai. Ambil 50% untung di TP2, biarkan baki 'Risk-Free' ke TP3.\n"
-        "━━━━━━━━━━━━━━━━━━━━━━"
+        "........................................................"
     )
 
     
