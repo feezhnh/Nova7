@@ -188,11 +188,7 @@ def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
         
         if bitget_url: markup.row(InlineKeyboardButton("🟦 Trade on Bitget", url=bitget_url))
         elif gate_url: markup.row(InlineKeyboardButton("🟥 Trade on Gate.io", url=gate_url))
-
-    except Exception as e: print(f"[ERROR LOG] Ralat keyboard NOVA: {e}")
-
-    return markup, categories, contract_address, chain_name
-
+         
     except Exception as e: 
         admin_log(f"Ralat Keyboard / UI ({symbol})", e)
         print(f"[ERROR LOG] Ralat keyboard: {e}")
