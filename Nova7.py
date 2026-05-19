@@ -357,13 +357,35 @@ def run_trade_tracker_loop():
             with open("active_trades.json", "w") as f: json.dump(trades, f, indent=4)
 
 # ==========================================
-# 7. ENJIN PENGIMBASAN (MACRO DEFENSE, RSI BYPASS & COOLDOWN)
+# 7. ENJIN PENGIMBASAN (MACRO DEFENSE, RSI BYPASS & COOLDOWN KEKAL)
 # ==========================================
 def run_scanner_loop():
     global is_scanning
+    import json # Memastikan modul json dimuatkan
+    
+    # 💡 1. PELEWATAN BUT (BOOT DELAY)
+    print("[SYSTEM] Boot Delay aktif. Menunggu 30 saat sebelum merempuh pasaran untuk elak API Spam...")
+    time.sleep(30)
     
     KILL_LIST = {"btc", "eth", "usdt", "usdc", "fdusd", "dai", "wbtc", "steth", "weeth", "weth", "tusd", "usde"}
-    SIGNAL_COOLDOWN = {}  # 💡 MEMORY CACHE: Menyimpan log masa isyarat dihantar {coin_id: timestamp}
+    COOLDOWN_FILE = "signal_cooldown.json"
+
+    # 💡 2. PENGURUSAN MEMORI KEKAL (DATABASE)
+    def get_cooldowns():
+        if os.path.exists(COOLDOWN_FILE):
+            try:
+                with open(COOLDOWN_FILE, "r") as f: return json.load(f)
+            except: return {}
+        return {}
+
+    def save_cooldown(coin_id):
+        db = get_cooldowns()
+        db[coin_id] = time.time()
+        # Pembersihan automatik: Buang memori koin yang dah lebih 24 jam (86400 saat)
+        db = {k: v for k, v in db.items() if time.time() - v < 86400}
+        try:
+            with open(COOLDOWN_FILE, "w") as f: json.dump(db, f)
+        except: pass
 
     while True:
         if not is_scanning:
@@ -380,12 +402,14 @@ def run_scanner_loop():
             if btc_trend_24h < -4.0:
                 print(f"[DEFENSE MODE] BTC berdarah ({btc_trend_24h:.2f}%). Menghentikan imbasan Altcoin.")
                 if ADMIN_CHAT_ID:
-                    try: bot.send_message(ADMIN_CHAT_ID, f"⚠️ <b>[DEFENSE MODE AKTIF]</b> Makro BTC sedang mengalami pendarahan berisiko tinggi (<code>{btc_trend_24h:.2f}%</code>). KRYPTON V1 membekukan operasi isyarat Altcoin untuk memelihara modal. Siklus ditunda 6 Jam.", parse_mode="HTML")
+                    try: bot.send_message(ADMIN_CHAT_ID, f"⚠️ <b>[DEFENSE MODE AKTIF]</b> Makro BTC sedang mengalami pendarahan berisiko tinggi (<code>{btc_trend_24h:.2f}%</code>). Sistem membekukan operasi isyarat Altcoin untuk memelihara modal. Siklus ditunda 6 Jam.", parse_mode="HTML")
                     except: pass
                 time.sleep(21600) 
                 continue
 
             global_res = requests.get(f"{BASE_URL}/global", headers=headers).json()
+            if 'data' not in global_res:
+                raise Exception(f"Respon tidak lengkap dari CoinGecko: {global_res}")
             btc_dominance = global_res['data']['market_cap_percentage']['btc']
             
             rsi_limit = 32 if (btc_dominance > 50.0 and btc_trend_24h < 0) else 40
@@ -398,6 +422,8 @@ def run_scanner_loop():
             continue
 
         top_coins = []
+        
+        # 🚨 TUKAR RANGE INI MENGIKUT FAIL (KRYPTON: 1, 3 | ALPHA: 3, 5 | NOVA: 5, 7)
         for page in range(5, 7): 
             if not is_scanning: break
             url = f"{BASE_URL}/coins/markets"
@@ -408,16 +434,19 @@ def run_scanner_loop():
                 time.sleep(2)
             except: time.sleep(2)
                 
+        # BACA MEMORI KEKAL SEBELUM MULA LOOP KOIN
+        cooldown_db = get_cooldowns()
+        current_time = time.time()
+                
         for coin in top_coins:
             if not is_scanning: break
             try:
                 coin_id = coin['id']
                 
-                # 💡 PROTOKOL COOLDOWN: Sekat koin jika sudah dihantar dalam tempoh 24 jam (86400 saat)
-                current_time = time.time()
-                if coin_id in SIGNAL_COOLDOWN:
-                    if current_time - SIGNAL_COOLDOWN[coin_id] < 86400:
-                        continue  # Abaikan dan lompat ke koin seterusnya
+                # 💡 3. VERIFIKASI MEMORI KEKAL (SEKAT SPAM API)
+                if coin_id in cooldown_db:
+                    if current_time - cooldown_db[coin_id] < 86400:
+                        continue # Skip! Tak payah bazir API tarik market_chart koin ni.
                 
                 symbol_lower = coin['symbol'].lower()
                 if symbol_lower in KILL_LIST: continue
@@ -426,7 +455,9 @@ def run_scanner_loop():
                 ath_change = coin.get('ath_change_percentage')
                 current_vol = coin.get('total_volume')
                 
+                # 🚨 TUKAR PINTU ATH MENGIKUT FAIL (KRYPTON: -20 | ALPHA: -35 | NOVA: -50)
                 if ath_change is None or ath_change > -50: continue
+                
                 if current_vol is None or current_vol < 500000: continue
 
                 hist_url = f"{BASE_URL}/coins/{coin_id}/market_chart"
@@ -466,15 +497,16 @@ def run_scanner_loop():
                     trend_24 = coin.get('price_change_percentage_24h', 0)
                     dispatch_signal(TELEGRAM_CHAT_ID, coin['name'], symbol, coin.get('market_cap_rank', 'N/A'), ath_change, vol_mult, rsi_14, current_price, fibo, coin_id, trend_24, current_vol, trend_7d)
                     
-                    # 💡 REKOD LOG: Cop masa isyarat dihantar untuk sekatan kitaran seterusnya
-                    SIGNAL_COOLDOWN[coin_id] = current_time
+                    # 💡 4. SIMPAN REKOD KEKAL SELEPAS BERJAYA TEMBAK SIGNAL
+                    save_cooldown(coin_id)
+                    cooldown_db[coin_id] = time.time() # Update in-memory dict untuk kitaran semasa
                     
                 time.sleep(2)
             except: time.sleep(2)
                 
         if is_scanning:
             if ADMIN_CHAT_ID:
-                try: bot.send_message(ADMIN_CHAT_ID, "⏳ <b>[STANDBY]</b>Scanning makro Nova7 selesai. Engine Cooling (6Hrs).", parse_mode="HTML")
+                try: bot.send_message(ADMIN_CHAT_ID, "⏳ <b>[STANDBY]</b> Scanning makro selesai. Engine Cooling (6Hrs).", parse_mode="HTML")
                 except: pass
             time.sleep(21600)
 
