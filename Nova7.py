@@ -239,9 +239,9 @@ def dispatch_signal(chat_id, coin_name, symbol, rank, ath_change, vol_multiplier
         f"🩸 <b>ATH Drop:</b> {ath_change:.2f}%\n"
         "........................................................\n"
         f"🔥 <b>RSI (14D):</b> {rsi:.2f} ({rsi_status})\n"
-        f"📊 <b>Fibo (D1):</b> {fibo_result}\n"
+        f"📊 <b>Fibo (H1):</b> {fibo_result}\n"
         "........................................................\n"
-        "🛠️ <b>ALGO TRADE SETUP (Chart: D1)</b>\n"
+        "🛠️ <b>ALGO TRADE SETUP (Chart: H1 | EXTREME)</b>\n"
         f"🔸 <b>Entry Zone:</b> <code>${current_price:.6f}</code> - <code>${fibo['Fibo_786']:.6f}</code>\n"
         f"🛑 <b>Stop Loss:</b> <code>${sl:.6f}</code>\n\n"
         "🎯 <b>Targets:</b>\n"
@@ -466,13 +466,13 @@ def run_scanner_loop():
 # ==========================================
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    bot.reply_to(message, "⚡ <b>KRYPTON V1 AKTIF!</b>\nArahan tersedia: <code>/ca</code>, <code>/scan</code>, <code>/stop</code>", parse_mode="HTML")
+    bot.reply_to(message, "⚡ <b>NOVA 7 NOW AKTIF!</b>\nArahan tersedia: <code>/ca</code>, <code>/scan</code>, <code>/stop</code>", parse_mode="HTML")
 
 @bot.message_handler(commands=['scan'])
 def start_scan_cmd(message):
     global is_scanning
     is_scanning = True
-    bot.reply_to(message, "✅ <b>Enjin Krypton Diaktifkan.</b> Bot sedang merempuh pasaran.", parse_mode="HTML")
+    bot.reply_to(message, "✅ <b>Enjin NOVA7 Diaktifkan.</b> Bot sedang merempuh pasaran.", parse_mode="HTML")
 
 @bot.message_handler(commands=['stop'])
 def stop_scan_cmd(message):
