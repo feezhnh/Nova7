@@ -31,7 +31,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "I'M NOVA7 Aktif & Stabil 🐋"
+    return "Enjin Krypton V1 Aktif & Stabil 🐋"
 
 # ==========================================
 # 3. INDIKATOR TEKNIKAL & MATEMATIK [LOCKED]
@@ -126,7 +126,7 @@ def get_category_insight(categories):
         ) 
      
 # ==========================================
-# 5. PENJANA INLINE KEYBOARD (SISTEM 3: ULTRA LOW CAP 1000-1500)
+# 5. PENJANA INLINE KEYBOARD DINAMIK (ADVANCED SENTIMENT & ROUTING)
 # ==========================================
 def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
     markup = InlineKeyboardMarkup(row_width=2) 
@@ -143,42 +143,73 @@ def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
         categories = data.get("categories", [])
         
         asset_platform_id = data.get("asset_platform_id", "")
-        if asset_platform_id: chain_name = asset_platform_id.replace("-", " ").title()
+        if asset_platform_id:
+            chain_name = asset_platform_id.replace("-", " ").title()
 
         if not contract_address:
             platforms = data.get("platforms", {})
             if platforms: contract_address = list(platforms.values())[0]
 
-        # 1. ENJIN HYPE & ALIRAN WANG MUTLAK
+        # 💡 BARIS 1: ENJIN SENTIMEN CRYPTOPANIC KINI BERTARING
+        panic_url = f"https://cryptopanic.com/news?search={symbol}"
+        cg_url = f"https://www.coingecko.com/en/coins/{coin_id}"
+        markup.row(InlineKeyboardButton("🚨 CryptoPanic", url=panic_url), InlineKeyboardButton("ℹ️ Info", url=cg_url))
+        
+        # BARIS 2: SOSIAL & KOMUNITI RASMI
+        links = data.get("links", {})
+        row_social = []
+        if links.get("telegram_channel_identifier"):
+            row_social.append(InlineKeyboardButton("✈️ Telegram", url=f"https://t.me/{links['telegram_channel_identifier']}"))
+        if links.get("twitter_screen_name"):
+            row_social.append(InlineKeyboardButton("🐦 X", url=f"https://twitter.com/{links['twitter_screen_name']}"))
+        if row_social: markup.row(*row_social)
+
+        # 💡 BARIS 3: GABUNGAN X CASHTAG LIVE (HYPE) & DEXSCREENER (MONEY FLOW)
         cashtag_url = f"https://twitter.com/search?q=%24{symbol}&f=live"
-        dex_url = f"https://dexscreener.com/search?q={contract_address}" if contract_address else f"https://dexscreener.com/search?q={symbol}"
+        if contract_address:
+            dex_url = f"https://dexscreener.com/search?q={contract_address}"
+        else:
+            dex_url = f"https://dexscreener.com/search?q={symbol}"
         markup.row(InlineKeyboardButton("🐦 Cashtag Live", url=cashtag_url), InlineKeyboardButton("📊 DexScreener", url=dex_url))
         
-        # 2. DEX SNIPER (KEUTAMAAN PERTAMA UNTUK EKSEKUSI PANTAS)
-        if contract_address:
-            platform_id_lower = asset_platform_id.lower() if asset_platform_id else ""
-            if "solana" in platform_id_lower:
-                markup.row(InlineKeyboardButton("🤖 Fast Snipe on BonkBot", url=f"https://t.me/bonkbot_bot?start=ref_krypton_{contract_address}"))
-            else:
-                markup.row(InlineKeyboardButton("🦅 Fast Snipe on Maestro", url=f"https://t.me/MaestroSniperBot?start={contract_address}-krypton"))
-
-        # 3. CEX SOKONGAN (BINANCE DIBUANG DARI RADAR, HANYA BITGET/GATE)
+        # BARIS 4: TENTUKAN 1 CEX TERBAIK (KING OF THE HILL)
         tickers = data.get("tickers", [])
-        bitget_url = gate_url = None
+        binance_url = bitget_url = gate_url = None
+        
         for t in tickers:
             market_name = t["market"]["name"].lower()
             trade_url = t.get("trade_url")
             if not trade_url: continue 
             
-            if "bitget" in market_name and not bitget_url: bitget_url = trade_url
+            if "binance" in market_name and not binance_url: binance_url = trade_url
+            elif "bitget" in market_name and not bitget_url: bitget_url = trade_url
             elif "gate" in market_name and not gate_url: gate_url = trade_url
         
-        if bitget_url: markup.row(InlineKeyboardButton("🟦 Trade on Bitget", url=bitget_url))
-        elif gate_url: markup.row(InlineKeyboardButton("🟥 Trade on Gate.io", url=gate_url))
+        if binance_url:
+            markup.row(InlineKeyboardButton("🟨 Trade on Binance", url=binance_url))
+        elif bitget_url:
+            markup.row(InlineKeyboardButton("🟦 Trade on Bitget", url=bitget_url))
+        elif gate_url:
+            markup.row(InlineKeyboardButton("🟥 Trade on Gate.io", url=gate_url))
 
-    except Exception as e: print(f"[ERROR LOG] Ralat keyboard S3: {e}")
+        # BARIS 5: DEX SNIPER AUTOMATED ROUTING
+        if contract_address:
+            platform_id_lower = asset_platform_id.lower() if asset_platform_id else ""
+            
+            # Jika ia koin Solana, panggil raja Solana (BonkBot)
+            if "solana" in platform_id_lower:
+                bonk_url = f"https://t.me/bonkbot_bot?start=ref_krypton_{contract_address}"
+                markup.row(InlineKeyboardButton("🤖 Trade on BonkBot", url=bonk_url))
+            
+            # Jika ia rantaian lain (ETH, Base, BSC), panggil Maestro
+            else:
+                maestro_url = f"https://t.me/MaestroSniperBot?start={contract_address}-krypton"
+                markup.row(InlineKeyboardButton("🦅 Trade on Maestro", url=maestro_url))
+
+    except Exception as e: print(f"[ERROR LOG] Ralat keyboard: {e}")
 
     return markup, categories, contract_address, chain_name
+
 # ==========================================
 # 6. ENJIN SIGNAL TELEGRAM (CLINICAL EXECUTION UI)
 # ==========================================
@@ -239,9 +270,9 @@ def dispatch_signal(chat_id, coin_name, symbol, rank, ath_change, vol_multiplier
         f"🩸 <b>ATH Drop:</b> {ath_change:.2f}%\n"
         "........................................................\n"
         f"🔥 <b>RSI (14D):</b> {rsi:.2f} ({rsi_status})\n"
-        f"📊 <b>Fibo (H1):</b> {fibo_result}\n"
+        f"📊 <b>Fibo (D1):</b> {fibo_result}\n"
         "........................................................\n"
-        "🛠️ <b>ALGO TRADE SETUP (Chart: H1 | EXTREME)</b>\n"
+        "🛠️ <b>ALGO TRADE SETUP (Chart: D1)</b>\n"
         f"🔸 <b>Entry Zone:</b> <code>${current_price:.6f}</code> - <code>${fibo['Fibo_786']:.6f}</code>\n"
         f"🛑 <b>Stop Loss:</b> <code>${sl:.6f}</code>\n\n"
         "🎯 <b>Targets:</b>\n"
@@ -256,49 +287,28 @@ def dispatch_signal(chat_id, coin_name, symbol, rank, ath_change, vol_multiplier
 
     
     try:
-        # Hantar mesej dan tangkap ID
-        sent_msg = bot.send_message(chat_id, msg, reply_markup=markup, disable_web_page_preview=True)
-        
-        # 💡 SIMPAN DATA UNTUK JEJAKAN ENJIN FOMO
-        import json
-        trade_log = {
-            "coin_id": coin_id,
-            "symbol": safe_sym,
-            "message_id": sent_msg.message_id,
-            "tp1": tp1, "tp2": tp2, "tp3": tp3, "sl": sl,
-            "status": "TRACKING"
-        }
-        
-        trades = {}
-        if os.path.exists("active_trades.json"):
-            try:
-                with open("active_trades.json", "r") as f: trades = json.load(f)
-            except: trades = {}
-            
-        trades[str(sent_msg.message_id)] = trade_log
-        with open("active_trades.json", "w") as f: json.dump(trades, f, indent=4)
-            
+        bot.send_message(chat_id, msg, reply_markup=markup, disable_web_page_preview=True)
     except Exception as e:
         print(f"[ERROR LOG] Mesej Telegram gagal dihantar: {e}")
-     
-     # ==========================================
+
+# ==========================================
 # 6.5 ENJIN TRACKER FOMO (REAL-TIME AUTO REPLY)
 # ==========================================
 def run_trade_tracker_loop():
     import json
     while True:
-        time.sleep(900) # Semak setiap 15 minit untuk jimat kuota API
+        time.sleep(300) # Semak setiap 5 minit untuk memelihara kuota API
         if not TELEGRAM_CHAT_ID or not os.path.exists("active_trades.json"): continue
         
         try:
             with open("active_trades.json", "r") as f: trades = json.load(f)
         except: continue
         
-        # Tapis hanya koin yang aktif
+        # Tapis hanya koin yang belum mati (belum hit SL atau TP3)
         active_items = {k: v for k, v in trades.items() if v["status"] not in ["COMPLETED", "STOP_LOSS"]}
         if not active_items: continue
         
-        # Panggilan API Pukal (Batch Call)
+        # Himpun semua ID koin untuk buat panggilan pukal (Batch Call)
         coin_ids = list(set([v["coin_id"] for v in active_items.values()]))
         ids_str = ",".join(coin_ids)
         
@@ -321,21 +331,29 @@ def run_trade_tracker_loop():
             reply_text = ""
             new_status = status
             
+            # 1. SEMAK STOPlOSS (KEUTAMAAN PERLINDUNGAN)
             if price_now <= trade["sl"]:
                 reply_text = f"🛑 <b>{sym} — STOP LOSS HIT</b>\nProteksi modal diaktifkan pada harga <code>${price_now:.6f}</code>. Sila keluar dari pasaran."
                 new_status = "STOP_LOSS"
+            
+            # 2. SEMAK TP3 (MAKSIMUM FOMO)
             elif price_now >= trade["tp3"] and status != "TP2_HIT":
                 reply_text = f"👑 <b>{sym} — TP3 MAX TARGET HIT!</b>\nMoonshot selesai sempurna di harga <code>${price_now:.6f}</code>! 100% sasaran hancur ditewaskan. 🎉🚀"
                 new_status = "COMPLETED"
+                
+            # 3. SEMAK TP2
             elif price_now >= trade["tp2"] and status not in ["TP2_HIT", "COMPLETED"]:
                 reply_text = f"🔥 <b>{sym} — TARGET TP2 ACHIEVED!</b>\nGolden Pocket ditembus pada harga <code>${price_now:.6f}</code>. Poketkan 50% profit, biarkan baki berjalan 'Risk-Free'!"
                 new_status = "TP2_HIT"
+                
+            # 4. SEMAK TP1
             elif price_now >= trade["tp1"] and status == "TRACKING":
                 reply_text = f"✅ <b>{sym} — TARGET TP1 SECURED!</b>\nLantunan pertama disahkan pada harga <code>${price_now:.6f}</code>. Alihkan Stop Loss kau ke harga Entry (Break-Even) SEKARANG! ⚡"
                 new_status = "TP1_HIT"
                 
             if reply_text:
                 try:
+                    # Melakukan arahan REPLY tepat pada mesej asal di Telegram channel
                     bot.send_message(TELEGRAM_CHAT_ID, reply_text, reply_to_message_id=int(msg_id), parse_mode="HTML")
                     trades[msg_id]["status"] = new_status
                     updated = True
@@ -371,7 +389,7 @@ def run_scanner_loop():
                 if ADMIN_CHAT_ID:
                     try: bot.send_message(ADMIN_CHAT_ID, f"⚠️ <b>[DEFENSE MODE AKTIF]</b> Makro BTC sedang mengalami pendarahan berisiko tinggi (<code>{btc_trend_24h:.2f}%</code>). KRYPTON V1 membekukan operasi isyarat Altcoin untuk memelihara modal. Siklus ditunda 6 Jam.", parse_mode="HTML")
                     except: pass
-                time.sleep(3600) 
+                time.sleep(21600) 
                 continue
 
             global_res = requests.get(f"{BASE_URL}/global", headers=headers).json()
@@ -386,7 +404,7 @@ def run_scanner_loop():
             continue
 
         top_coins = []
-        for page in range(5, 7): 
+        for page in range(1, 3): 
             if not is_scanning: break
             url = f"{BASE_URL}/coins/markets"
             params = {"vs_currency": "usd", "order": "market_cap_desc", "per_page": 250, "page": page, "sparkline": "false"}
@@ -415,11 +433,10 @@ def run_scanner_loop():
                 current_vol = coin.get('total_volume')
                 
                 if ath_change is None or ath_change > -50: continue
-                if current_vol is None or current_vol < 250000: continue
+                if current_vol is None or current_vol < 500000: continue
 
                 hist_url = f"{BASE_URL}/coins/{coin_id}/market_chart"
-                # 💡 ALGORITMA SNIPER H1: Aksi harga 7 hari sangat sensitif terhadap perubahan pantas
-                hist_res = requests.get(hist_url, params={"vs_currency": "usd", "days": "7"}, headers=headers)
+                hist_res = requests.get(hist_url, params={"vs_currency": "usd", "days": "30", "interval": "daily"}, headers=headers)
                 
                 if hist_res.status_code != 200:
                     time.sleep(2)
@@ -430,20 +447,26 @@ def run_scanner_loop():
                 volumes = [v[1] for v in data['total_volumes']]
                 
                 if len(prices) < 30: continue
-                
-                # 💡 MATEMATIK H1: 168 mewakili 168 Jam (Tepat 7 Hari).
-                # Ini mengekalkan logik Volume Spike & Trend asal kau!
-                avg_vol_7d = np.mean(volumes[-168:-1]) if len(volumes) >= 168 else np.mean(volumes[:-1])
+                    
+                avg_vol_7d = np.mean(volumes[-8:-1])
                 if avg_vol_7d == 0: continue
                 
                 vol_mult = current_vol / avg_vol_7d
-                # ... (biarkan kod rsi_14, rsi_limit, dan fibo yang asal di sini) ...
+                if vol_mult < 1.5: continue
+                    
+                rsi_14 = calculate_rsi(prices, period=14)
                 
+                if vol_mult >= 2.0:
+                    if rsi_14 > 50: continue 
+                else:
+                    if rsi_14 >= rsi_limit: continue
+                    
+                fibo = calculate_fibonacci_levels(prices)
+                current_price = prices[-1]
+
                 trend_7d = 0.0
-                if len(prices) >= 168:
-                    trend_7d = ((current_price - prices[-168]) / prices[-168]) * 100
-                elif len(prices) > 0:
-                    trend_7d = ((current_price - prices[0]) / prices[0]) * 100
+                if len(prices) >= 8:
+                    trend_7d = ((current_price - prices[-8]) / prices[-8]) * 100
                 
                 if current_price <= fibo["Fibo_618"]:
                     trend_24 = coin.get('price_change_percentage_24h', 0)
@@ -457,22 +480,22 @@ def run_scanner_loop():
                 
         if is_scanning:
             if ADMIN_CHAT_ID:
-                try: bot.send_message(ADMIN_CHAT_ID, "⏳ <b>[STANDBY]</b> Scan makro Nova7 selesai. Enjin disejukkan (1 Jam).", parse_mode="HTML")
+                try: bot.send_message(ADMIN_CHAT_ID, "⏳ <b>[STANDBY]</b> Siklus makro selesai. Enjin disejukkan (6 Jam).", parse_mode="HTML")
                 except: pass
-            time.sleep(3600)
+            time.sleep(21600)
 
 # # ==========================================
 # 8. TELEGRAM COMMAND HANDLERS
 # ==========================================
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    bot.reply_to(message, "⚡ <b>NOVA 7 NOW AKTIF!</b>\nArahan tersedia: <code>/ca</code>, <code>/scan</code>, <code>/stop</code>", parse_mode="HTML")
+    bot.reply_to(message, "⚡ <b>KRYPTON V1 AKTIF!</b>\nArahan tersedia: <code>/ca</code>, <code>/scan</code>, <code>/stop</code>", parse_mode="HTML")
 
 @bot.message_handler(commands=['scan'])
 def start_scan_cmd(message):
     global is_scanning
     is_scanning = True
-    bot.reply_to(message, "✅ <b>Enjin NOVA7 Diaktifkan.</b> Bot sedang merempuh pasaran.", parse_mode="HTML")
+    bot.reply_to(message, "✅ <b>Enjin Krypton Diaktifkan.</b> Bot sedang merempuh pasaran.", parse_mode="HTML")
 
 @bot.message_handler(commands=['stop'])
 def stop_scan_cmd(message):
@@ -510,19 +533,16 @@ def manual_ca_check(message):
         vol_24 = market_res.get('total_volume', 0)
         
         hist_url = f"{BASE_URL}/coins/{coin_id}/market_chart"
-        # 💡 ALGORITMA SNIPER H1: Selaraskan /ca manual dengan enjin automatik (7 Hari)
-        hist_data = requests.get(hist_url, params={"vs_currency": "usd", "days": "7"}, headers=headers).json()
+        hist_data = requests.get(hist_url, params={"vs_currency": "usd", "days": "30", "interval": "daily"}, headers=headers).json()
         prices = [p[1] for p in hist_data['prices']]
         
         rsi_14 = calculate_rsi(prices, 14) if len(prices) >= 30 else 0.0
         fibo = calculate_fibonacci_levels(prices) if len(prices) >= 30 else {"Fibo_100": current_price, "Fibo_786": current_price, "Fibo_618": current_price, "Fibo_0": current_price}
-      
-        # 💡 MATEMATIK H1: 1W (7D) Drop diselaraskan ke 168 Jam
+        
+        # MATEMATIK BARU: 1W (7D) Drop
         trend_7d = 0.0
-        if len(prices) >= 168:
-            trend_7d = ((current_price - prices[-168]) / prices[-168]) * 100
-        elif len(prices) > 0:
-            trend_7d = ((current_price - prices[0]) / prices[0]) * 100
+        if len(prices) >= 8:
+            trend_7d = ((current_price - prices[-8]) / prices[-8]) * 100
 
         dispatch_signal(TELEGRAM_CHAT_ID, coin_name, symbol, rank, ath_change, 1.0, rsi_14, current_price, fibo, coin_id, trend_24, vol_24, trend_7d, passed_ca=passed_address)
         bot.reply_to(message, "✅ <b>Analisis Selesai!</b>", parse_mode="HTML")
@@ -536,7 +556,7 @@ def manual_ca_check(message):
 def graceful_shutdown(*args):
     # OFFLINE MESEJ KE ADMIN SAHAJA
     if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
-        try: bot.send_message(ADMIN_CHAT_ID, "🔴 <b>[OFFLINE] NOVA7 DISCONNECTED.</b> Render shutting down.", parse_mode="HTML")
+        try: bot.send_message(ADMIN_CHAT_ID, "🔴 <b>[OFFLINE] KRYPTON DISCONNECTED.</b> Render shutting down.", parse_mode="HTML")
         except: pass
     sys.exit(0)
 
@@ -546,12 +566,13 @@ if __name__ == "__main__":
     
     # BOOT UP MESEJ KE ADMIN SAHAJA
     if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
-        try: bot.send_message(ADMIN_CHAT_ID, "🟢 <b>HELLO, NOVA7 IS NOW ACTIVE.</b>\nLink to Render established.", parse_mode="HTML")
+        try: bot.send_message(ADMIN_CHAT_ID, "🟢 <b>HELLO, KRYPTON V1 NOW ACTIVE.</b>\nLink to Render established.", parse_mode="HTML")
         except: pass
 
+    # 💡 HIDUPKAN ENJIN AUTOMATIK DI SINI
     threading.Thread(target=run_trade_tracker_loop, daemon=True).start()
     threading.Thread(target=run_scanner_loop, daemon=True).start()
-    #threading.Thread(target=bot.infinity_polling, daemon=True).start()
+    threading.Thread(target=bot.infinity_polling, daemon=True).start()
     
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
 
