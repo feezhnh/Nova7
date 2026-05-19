@@ -126,7 +126,7 @@ def get_category_insight(categories):
         ) 
      
 # ==========================================
-# 5. PENJANA INLINE KEYBOARD DINAMIK (ADVANCED SENTIMENT & ROUTING)
+# 5. PENJANA INLINE KEYBOARD DINAMIK (UNIVERSAL & AUTO-HIDE)
 # ==========================================
 def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
     markup = InlineKeyboardMarkup(row_width=2) 
@@ -150,60 +150,62 @@ def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
             platforms = data.get("platforms", {})
             if platforms: contract_address = list(platforms.values())[0]
 
-        # 💡 BARIS 1: ENJIN SENTIMEN CRYPTOPANIC KINI BERTARING
+        # 💡 BARIS 1: ENJIN SENTIMEN (Sentiasa ada kerana ID/Symbol wajib wujud)
         panic_url = f"https://cryptopanic.com/news?search={symbol}"
         cg_url = f"https://www.coingecko.com/en/coins/{coin_id}"
         markup.row(InlineKeyboardButton("🚨 CryptoPanic", url=panic_url), InlineKeyboardButton("ℹ️ Info", url=cg_url))
         
-        # BARIS 2: SOSIAL & KOMUNITI RASMI
+        # 💡 BARIS 2: SOSIAL & KOMUNITI (SEMBUNYI JIKA TIADA REKOD)
         links = data.get("links", {})
         row_social = []
         if links.get("telegram_channel_identifier"):
             row_social.append(InlineKeyboardButton("✈️ Telegram", url=f"https://t.me/{links['telegram_channel_identifier']}"))
         if links.get("twitter_screen_name"):
             row_social.append(InlineKeyboardButton("🐦 X", url=f"https://twitter.com/{links['twitter_screen_name']}"))
-        if row_social: markup.row(*row_social)
+        if row_social: markup.row(*row_social) # Hanya bina baris jika ada butang
 
-        # 💡 BARIS 3: GABUNGAN X CASHTAG LIVE (HYPE) & DEXSCREENER (MONEY FLOW)
+        # 💡 BARIS 3: CASHTAG (Sentiasa ada) & DEXSCREENER (SEMBUNYI JIKA TIADA CA)
         cashtag_url = f"https://twitter.com/search?q=%24{symbol}&f=live"
+        row_hype = [InlineKeyboardButton("🐦 Cashtag Live", url=cashtag_url)]
         if contract_address:
             dex_url = f"https://dexscreener.com/search?q={contract_address}"
-        else:
-            dex_url = f"https://dexscreener.com/search?q={symbol}"
-        markup.row(InlineKeyboardButton("🐦 Cashtag Live", url=cashtag_url), InlineKeyboardButton("📊 DexScreener", url=dex_url))
+            row_hype.append(InlineKeyboardButton("📊 DexScreener", url=dex_url))
+        markup.row(*row_hype)
         
-        # BARIS 4: TENTUKAN 1 CEX TERBAIK (KING OF THE HILL)
+        # 💡 BARIS 4: CEX KING OF THE HILL (PAKSAAN DEEP-LINK USDT & SEMBUNYI JIKA TIADA)
         tickers = data.get("tickers", [])
-        binance_url = bitget_url = gate_url = None
+        has_binance = has_bitget = has_gate = False
         
         for t in tickers:
             market_name = t["market"]["name"].lower()
-            trade_url = t.get("trade_url")
-            if not trade_url: continue 
+            target_coin = t.get("target", "").upper()
             
-            if "binance" in market_name and not binance_url: binance_url = trade_url
-            elif "bitget" in market_name and not bitget_url: bitget_url = trade_url
-            elif "gate" in market_name and not gate_url: gate_url = trade_url
+            # Tapis hanya pasangan USDT untuk ketepatan pautan CEX
+            if "USDT" in target_coin or t.get("target") == "USDT":
+                if "binance" in market_name: has_binance = True
+                elif "bitget" in market_name: has_bitget = True
+                elif "gate" in market_name: has_gate = True
         
-        if binance_url:
-            markup.row(InlineKeyboardButton("🟨 Trade on Binance", url=binance_url))
-        elif bitget_url:
-            markup.row(InlineKeyboardButton("🟦 Trade on Bitget", url=bitget_url))
-        elif gate_url:
-            markup.row(InlineKeyboardButton("🟥 Trade on Gate.io", url=gate_url))
+        # BINA PAUTAN TERUS (DIRECT DEEP-LINK)
+        if has_binance:
+            markup.row(InlineKeyboardButton("🟨 Trade on Binance", url=f"https://www.binance.com/en/trade/{symbol.upper()}_USDT"))
+        elif has_bitget:
+            markup.row(InlineKeyboardButton("🟦 Trade on Bitget", url=f"https://www.bitget.com/spot/{symbol.upper()}USDT"))
+        elif has_gate:
+            markup.row(InlineKeyboardButton("🟥 Trade on Gate.io", url=f"https://www.gate.io/trade/{symbol.upper()}_USDT"))
 
-        # BARIS 5: DEX SNIPER AUTOMATED ROUTING
+        # 💡 BARIS 5: DEX SNIPER (SEMBUNYI JIKA TIADA CA & GUNA NAMA NEUTRAL)
         if contract_address:
             platform_id_lower = asset_platform_id.lower() if asset_platform_id else ""
             
             # Jika ia koin Solana, panggil raja Solana (BonkBot)
             if "solana" in platform_id_lower:
-                bonk_url = f"https://t.me/bonkbot_bot?start=ref_krypton_{contract_address}"
+                bonk_url = f"https://t.me/bonkbot_bot?start=ref_sniper_{contract_address}"
                 markup.row(InlineKeyboardButton("🤖 Trade on BonkBot", url=bonk_url))
             
             # Jika ia rantaian lain (ETH, Base, BSC), panggil Maestro
             else:
-                maestro_url = f"https://t.me/MaestroSniperBot?start={contract_address}-krypton"
+                maestro_url = f"https://t.me/MaestroSniperBot?start={contract_address}-sniper"
                 markup.row(InlineKeyboardButton("🦅 Trade on Maestro", url=maestro_url))
 
     except Exception as e: print(f"[ERROR LOG] Ralat keyboard: {e}")
