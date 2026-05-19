@@ -457,7 +457,7 @@ def run_scanner_loop():
                 
         if is_scanning:
             if ADMIN_CHAT_ID:
-                try: bot.send_message(ADMIN_CHAT_ID, "⏳ <b>[STANDBY]</b> Siklus makro selesai. Enjin disejukkan (6 Jam).", parse_mode="HTML")
+                try: bot.send_message(ADMIN_CHAT_ID, "⏳ <b>[STANDBY]</b> Scan makro Nova7 selesai. Enjin disejukkan (1 Jam).", parse_mode="HTML")
                 except: pass
             time.sleep(3600)
 
