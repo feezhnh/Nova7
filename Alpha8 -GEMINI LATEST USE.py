@@ -20,9 +20,34 @@ ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID")
 BASE_URL = "https://api.coingecko.com/api/v3"  # <--- PASTIKAN BARIS INI WUJUD!
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode="HTML")
-is_scanning = True 
-
- 
+import json
+scan_event  = threading.Event()
+scan_event.set()
+trades_lock = threading.Lock() 
+def save_trade(msg_id, symbol, coin_id, sl, tp1, tp2, tp3):
+    with trades_lock:
+        trades = {}
+        if os.path.exists("active_trades.json"):
+            try:
+                with open("active_trades.json", "r") as f:
+                    trades = json.load(f)
+            except Exception:
+                trades = {}
+        trades[str(msg_id)] = {
+            "symbol":    symbol,
+            "coin_id":   coin_id,
+            "sl":        sl,
+            "tp1":       tp1,
+            "tp2":       tp2,
+            "tp3":       tp3,
+            "status":    "TRACKING",
+            "timestamp": time.time(),
+        }
+        try:
+            with open("active_trades.json", "w") as f:
+                json.dump(trades, f, indent=4)
+        except Exception as e:
+            print(f"[ERROR] Gagal simpan trade: {e}")
 
 # ==========================================
 # 2. DUMMY WEB SERVER (RENDER KEEP-ALIVE) [LOCKED]
@@ -77,6 +102,64 @@ def calculate_fibonacci_levels(prices):
         "Fibo_100": high_p, "Fibo_618": high_p - (0.618 * diff),
         "Fibo_786": high_p - (0.786 * diff), "Fibo_0": low_p
     }
+
+def calculate_ema(prices, period):
+    arr = np.array(prices, dtype=float)
+    if len(arr) < period:
+        return float(arr[-1])
+    k   = 2.0 / (period + 1)
+    ema = float(np.mean(arr[:period]))
+    for price in arr[period:]:
+        ema = price * k + ema * (1.0 - k)
+    return round(ema, 10)
+
+def calculate_atr(prices, period=14):
+    arr = np.array(prices, dtype=float)
+    if len(arr) < period + 1:
+        return float(arr[-1]) * 0.05
+    daily_moves = np.abs(np.diff(arr[-(period + 1):]))
+    return float(np.mean(daily_moves))
+
+def compute_signal_score(rsi, vol_mult, ath_change, rr_ratio, ema7, ema21, syarat):
+    score = 0
+    if syarat == 1:
+        if 30 <= rsi < 35:    score += 25
+        elif 35 <= rsi < 40:  score += 18
+        elif 40 <= rsi < 45:  score += 10
+        elif 45 <= rsi <= 50: score += 5
+    else:
+        if rsi < 25:    score += 25
+        elif rsi < 30:  score += 20
+        elif rsi < 35:  score += 14
+        elif rsi < 40:  score += 8
+        elif rsi <= 50: score += 4
+
+    if vol_mult >= 4.0:   score += 25
+    elif vol_mult >= 3.0: score += 20
+    elif vol_mult >= 2.0: score += 14
+    elif vol_mult >= 1.5: score += 8
+
+    ath_drop = abs(ath_change)
+    if ath_drop >= 80:   score += 20
+    elif ath_drop >= 70: score += 16
+    elif ath_drop >= 60: score += 12
+    elif ath_drop >= 50: score += 8
+    elif ath_drop >= 35: score += 4
+
+    if rr_ratio >= 4.0:   score += 20
+    elif rr_ratio >= 3.0: score += 16
+    elif rr_ratio >= 2.0: score += 10
+    elif rr_ratio >= 1.5: score += 5
+
+    if ema7 >= ema21:          score += 10
+    elif ema7 >= ema21 * 0.97: score += 5
+
+    if score >= 80:   grade = "⭐⭐⭐ A+ (Max Conviction)"
+    elif score >= 65: grade = "⭐⭐ B+ (High Conviction)"
+    elif score >= 50: grade = "⭐ C+ (Standard)"
+    else:             grade = "⚠️ D (Caution)"
+
+    return score, grade
 
 # ==========================================
 # 4. PEMETAAN KATEGORI & TESIS BM (ULTRA-VIP BLOOMBERG TONE)
@@ -161,9 +244,9 @@ def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
             if platforms: contract_address = list(platforms.values())[0]
 
         # 1. HIBRID INFO (MAKRO + DEX)
-        panic_url = f"https://cryptopanic.com/news?search={symbol}"
+        cashtag_url = f"https://twitter.com/search?q=%24{symbol}&f=live"
         dex_url = f"https://dexscreener.com/search?q={contract_address}" if contract_address else f"https://dexscreener.com/search?q={symbol}"
-        markup.row(InlineKeyboardButton("🚨 CryptoPanic", url=panic_url), InlineKeyboardButton("📊 DexScreener", url=dex_url))
+        markup.row(InlineKeyboardButton("🐦 Cashtag Live", url=cashtag_url), InlineKeyboardButton("📊 DexScreener", url=dex_url))
         
         # 2. CEX KING OF THE HILL (PAKSAAN DEEP-LINK USDT)
         tickers = data.get("tickers", [])
@@ -197,14 +280,14 @@ def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
 
     except Exception as e: 
         admin_log(f"Ralat Keyboard / UI ({symbol})", e)
-        print(f"[ERROR LOG] Ralat keyboard NOVA: {e}")
+        print(f"[ERROR LOG] Ralat keyboard ALPHA: {e}")
 
     return markup, categories, contract_address, chain_name
 
 # ==========================================
 # 6. ENJIN SIGNAL TELEGRAM (ALPHA V2 - WATERFALL SETUP)
 # ==========================================
-def dispatch_signal(chat_id, coin_name, symbol, rank, ath_change, vol_multiplier, rsi, current_price, fibo, coin_id, trend_24h, vol_24h, trend_7d, passed_ca=None):
+def dispatch_signal(chat_id, coin_name, symbol, rank, ath_change, vol_multiplier, rsi, current_price, fibo, coin_id, trend_24h, vol_24h, trend_7d, ema7=None, ema21=None, passed_ca=None):
     if not TELEGRAM_TOKEN or not chat_id: return
 
     markup, categories, final_ca, chain_name = generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=passed_ca)
@@ -261,19 +344,23 @@ def dispatch_signal(chat_id, coin_name, symbol, rank, ath_change, vol_multiplier
         # PENGIRAAN ENTRY SETUP SYARAT 1
         entry_min = fibo['Fibo_100'] - (diff * 0.500)
         entry_max = fibo['Fibo_100'] - (diff * 0.382)
-        sl = fibo_golden_pocket * 0.97
-        tp1 = fibo['Fibo_100'] - (diff * 0.236)
-        tp2 = fibo['Fibo_100']
-        tp3 = fibo['Fibo_100'] * 1.15 # Target lonjakan Mid-Cap lebih tinggi
+        atr = calculate_atr(list(fibo.values()))
+        sl  = current_price - (2.0 * atr)
+        sl  = min(sl, fibo_golden_pocket * 0.97)
+        tp1 = current_price + (1.5 * atr)
+        tp2 = current_price + (3.0 * atr)
+        tp3 = current_price + (5.0 * atr)
         
     elif ath_drop >= 50.0:
         # 🥈 SYARAT 2: ALPHA DEEP VALUE (> -50%)
         entry_min = fibo['Fibo_0']
         entry_max = fibo['Fibo_0'] + (diff * 0.236)
-        sl = fibo['Fibo_0'] * 0.95
-        tp1 = fibo['Fibo_0'] + (diff * 0.382)
-        tp2 = fibo['Fibo_0'] + (diff * 0.500)
-        tp3 = fibo['Fibo_0'] + (diff * 0.618)
+        atr = calculate_atr(list(fibo.values()))
+        sl  = current_price - (2.0 * atr)
+        sl  = min(sl, fibo['Fibo_0'] * 0.97)
+        tp1 = current_price + (1.5 * atr)
+        tp2 = current_price + (3.0 * atr)
+        tp3 = current_price + (5.0 * atr)
         
     else:
         return # Abaikan jika kurang dari -35%
@@ -283,6 +370,18 @@ def dispatch_signal(chat_id, coin_name, symbol, rank, ath_change, vol_multiplier
     # ==========================================
     if not (entry_min <= current_price <= entry_max):
         return
+
+    # ── Signal Scoring ──
+    syarat = 1 if (35.0 <= abs(ath_change) < 50.0) else 2
+    risk   = max(current_price - sl, 1e-10)
+    reward = tp2 - current_price
+    rr     = round(reward / risk, 2)
+    _ema7  = ema7  if ema7  is not None else current_price
+    _ema21 = ema21 if ema21 is not None else current_price
+    signal_score, signal_grade = compute_signal_score(
+        rsi, vol_multiplier, ath_change, rr, _ema7, _ema21, syarat
+    )
+    syarat_label = "Mid-Pullback (Syarat 1)" if syarat == 1 else "Deep Value (Syarat 2)"
 
     # POSITION SIZING BERDASARKAN KELAS ASET
     rank_int = int(rank) if str(rank).isdigit() else 999
@@ -299,6 +398,7 @@ def dispatch_signal(chat_id, coin_name, symbol, rank, ath_change, vol_multiplier
         f"🪙 <b>{safe_coin} ({safe_sym})</b> — <i>{safe_chain}</i>\n"
         f"💳 <b>CA:</b> {ca_display}\n"
         f"💵 <b>Price:</b> ${current_price:.6f} | 📊 <b>Rank:</b> #{rank}\n"
+        f"🎯 <b>Signal Grade:</b> {signal_grade}\n"
         "........................................................\n"
         f"📉 <b>24H Trend:</b> {trend_24h:+.2f}%\n"
         f"📉 <b>1W Trend:</b> {trend_7d:+.2f}%\n"
@@ -307,6 +407,7 @@ def dispatch_signal(chat_id, coin_name, symbol, rank, ath_change, vol_multiplier
         "........................................................\n"
         f"🔥 <b>RSI (14D):</b> {rsi:.2f} ({rsi_status})\n"
         f"📊 <b>Fibo (D1):</b> {fibo_result}\n"
+        f"📐 <b>Waterfall:</b> {syarat_label}  |  <b>R:R</b> 1:{rr}\n"
         "........................................................\n"
         "🛠️ <b>ALGO TRADE SETUP (Chart: D1)</b>\n"
         f"🔸 <b>Entry Zone:</b> <code>${entry_min:.6f}</code> - <code>${entry_max:.6f}</code>\n"
@@ -322,10 +423,12 @@ def dispatch_signal(chat_id, coin_name, symbol, rank, ath_change, vol_multiplier
     )
 
     try:
-        bot.send_message(chat_id, msg, reply_markup=markup, disable_web_page_preview=True)
+        sent = bot.send_message(chat_id, msg, reply_markup=markup, disable_web_page_preview=True)
+        if sent:
+            save_trade(sent.message_id, symbol, coin_id, sl, tp1, tp2, tp3)
     except Exception as e:
         admin_log(f"ALPHA Gagal hantar signal {symbol}", e)
-        print(f"[ERROR LOG] Mesej Telegram gagal dihantar: {e}")
+        print(f"[ERROR] Telegram gagal: {e}")
      
 # ==========================================
 # 6.5 ENJIN TRACKER FOMO (REAL-TIME AUTO REPLY)
@@ -423,7 +526,7 @@ def run_scanner_loop():
         except: pass
 
     while True:
-        if not is_scanning:
+        if not scan_event.is_set():
             time.sleep(10)
             continue
             
@@ -431,7 +534,7 @@ def run_scanner_loop():
         headers = {"x-cg-demo-api-key": CG_API_KEY} if CG_API_KEY else {}
         
         try:
-            btc_res = requests.get(f"{BASE_URL}/coins/markets?vs_currency=usd&ids=bitcoin", headers=headers).json()
+            global_res = requests.get(f"{BASE_URL}/global", headers=headers).json()
             btc_trend_24h = btc_res[0].get('price_change_percentage_24h', 0)
             
             if btc_trend_24h < -4.0:
@@ -442,7 +545,7 @@ def run_scanner_loop():
                 time.sleep(21600) 
                 continue
 
-            global_res = requests.get(f"{BASE_URL}/global", headers=headers).json()
+            global_res = requests.get(f"{BASE_URL}/global", headers=headers, timeout=15).json()
             if 'data' not in global_res:
                 raise Exception(f"Respon tidak lengkap dari CoinGecko: {global_res}")
             btc_dominance = global_res['data']['market_cap_percentage']['btc']
@@ -460,7 +563,7 @@ def run_scanner_loop():
         
         # 🚨 TUKAR RANGE INI MENGIKUT FAIL (KRYPTON: 1, 3 | ALPHA: 3, 5 | NOVA: 5, 7)
         for page in range(3, 5): 
-            if not is_scanning: break
+            if not scan_event.is_set(): break
             url = f"{BASE_URL}/coins/markets"
             params = {"vs_currency": "usd", "order": "market_cap_desc", "per_page": 250, "page": page, "sparkline": "false"}
             try:
@@ -474,7 +577,7 @@ def run_scanner_loop():
         current_time = time.time()
                 
         for coin in top_coins:
-            if not is_scanning: break
+            if not scan_event.is_set(): break
             try:
                 coin_id = coin['id']
                 
@@ -496,7 +599,7 @@ def run_scanner_loop():
                 if current_vol is None or current_vol < 500000: continue
 
                 hist_url = f"{BASE_URL}/coins/{coin_id}/market_chart"
-                hist_res = requests.get(hist_url, params={"vs_currency": "usd", "days": "30", "interval": "daily"}, headers=headers)
+                hist_res = requests.get(hist_url, params={"vs_currency": "usd", "days": "30", "interval": "daily"}, headers=headers, timeout=15)
                 
                 if hist_res.status_code != 200:
                     time.sleep(2)
@@ -515,7 +618,9 @@ def run_scanner_loop():
                 if vol_mult < 1.5: continue
                     
                 rsi_14 = calculate_rsi(prices, period=14)
-                
+                ema7   = calculate_ema(prices, 7)
+                ema21  = calculate_ema(prices, 21)
+
                 if vol_mult >= 2.0:
                     if rsi_14 > 50: continue 
                 else:
@@ -530,7 +635,7 @@ def run_scanner_loop():
                 
                 if current_price <= fibo["Fibo_618"]:
                     trend_24 = coin.get('price_change_percentage_24h', 0)
-                    dispatch_signal(TELEGRAM_CHAT_ID, coin['name'], symbol, coin.get('market_cap_rank', 'N/A'), ath_change, vol_mult, rsi_14, current_price, fibo, coin_id, trend_24, current_vol, trend_7d)
+                    dispatch_signal(TELEGRAM_CHAT_ID, coin['name'], symbol, coin.get('market_cap_rank', 'N/A'), ath_change, vol_mult, rsi_14, current_price, fibo, coin_id, trend_24, current_vol, trend_7d, ema7=ema7, ema21=ema21)
                     
                     # 💡 4. SIMPAN REKOD KEKAL SELEPAS BERJAYA TEMBAK SIGNAL
                     save_cooldown(coin_id)
@@ -539,7 +644,7 @@ def run_scanner_loop():
                 time.sleep(2)
             except: time.sleep(2)
                 
-        if is_scanning:
+        if scan_event.is_set():
             if ADMIN_CHAT_ID:
                 try: bot.send_message(ADMIN_CHAT_ID, "⏳ <b>[STANDBY]</b> Scanning makro selesai. Engine Cooling (6Hrs).", parse_mode="HTML")
                 except: pass
@@ -550,19 +655,18 @@ def run_scanner_loop():
 # ==========================================
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    bot.reply_to(message, "⚡ <b>KRYPTON V1 AKTIF!</b>\nArahan tersedia: <code>/ca</code>, <code>/scan</code>, <code>/stop</code>", parse_mode="HTML")
+    status = "🟢 AKTIF" if scan_event.is_set() else "🔴 STANDBY"
+    bot.reply_to(message, f"⚡ <b>ALPHA V2 [{status}]</b>\nArahan tersedia: <code>/ca</code>, <code>/scan</code>, <code>/stop</code>", parse_mode="HTML")
 
 @bot.message_handler(commands=['scan'])
 def start_scan_cmd(message):
-    global is_scanning
-    is_scanning = True
-    bot.reply_to(message, "✅ <b>Enjin Krypton Diaktifkan.</b> Bot sedang merempuh pasaran.", parse_mode="HTML")
+    scan_event.set()
+    bot.reply_to(message, "✅ <b>Enjin Alpha V2 Diaktifkan.</b> Bot sedang merempuh pasaran.", parse_mode="HTML")
 
 @bot.message_handler(commands=['stop'])
 def stop_scan_cmd(message):
-    global is_scanning
-    is_scanning = False
-    bot.reply_to(message, "🛑 <b>Enjin Dihentikan Sementara.</b>", parse_mode="HTML")
+    scan_event.clear()
+    bot.reply_to(message, "🛑 <b>Enjin Alpha V2 Dihentikan Sementara.</b>", parse_mode="HTML")
 
 @bot.message_handler(commands=['ca'])
 def manual_ca_check(message):
@@ -617,7 +721,7 @@ def manual_ca_check(message):
 def graceful_shutdown(*args):
     # OFFLINE MESEJ KE ADMIN SAHAJA
     if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
-        try: bot.send_message(ADMIN_CHAT_ID, "🔴 <b>[OFFLINE] KRYPTON DISCONNECTED.</b> Render shutting down.", parse_mode="HTML")
+        try: bot.send_message(ADMIN_CHAT_ID, "🔴 <b>[OFFLINE] ALPHA V2 DISCONNECTED.</b> Render shutting down.", parse_mode="HTML")
         except: pass
     sys.exit(0)
 
@@ -627,7 +731,7 @@ if __name__ == "__main__":
     
     # BOOT UP MESEJ KE ADMIN SAHAJA
     if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
-        try: bot.send_message(ADMIN_CHAT_ID, "🟢 <b>HELLO, KRYPTON V1 NOW ACTIVE.</b>\nLink to Render established.", parse_mode="HTML")
+        try: bot.send_message(ADMIN_CHAT_ID, "🟢 <b>HELLO, ALPHA V2 NOW ACTIVE.</b>\nLink to Render established.", parse_mode="HTML")
         except: pass
 
     threading.Thread(target=run_trade_tracker_loop, daemon=True).start()
