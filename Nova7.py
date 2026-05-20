@@ -649,6 +649,6 @@ if __name__ == "__main__":
 
     threading.Thread(target=run_trade_tracker_loop, daemon=True).start()
     threading.Thread(target=run_scanner_loop, daemon=True).start()
-    threading.Thread(target=bot.infinity_polling, daemon=True).start()
+    #threading.Thread(target=bot.infinity_polling, daemon=True).start()
     
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
