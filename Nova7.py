@@ -32,6 +32,8 @@ ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID")
 BASE_URL = "https://api.coingecko.com/api/v3"
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode="HTML")
+bot.remove_webhook()
+time.sleep(1)
 is_scanning = True 
 trades_lock = threading.Lock() # Untuk elak fail rosak bila update serentak
 
@@ -43,6 +45,13 @@ app = Flask(__name__)
 @app.route('/')
 def home():
     return "Engine Nova7 Aktif & Stabil 🐋"
+
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    from flask import request
+    update = telebot.types.Update.de_json(request.get_json())
+    bot.process_new_updates([update])
+    return 'ok', 200
 
 def admin_log(context, error):
     if not ADMIN_CHAT_ID: return
@@ -641,14 +650,22 @@ def graceful_shutdown(*args):
 
 if __name__ == "__main__":
     signal.signal(signal.SIGTERM, graceful_shutdown)
-    signal.signal(signal.SIGINT, graceful_shutdown)
-    
+    signal.signal(signal.SIGINT,  graceful_shutdown)
+
+    RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
+    if RENDER_URL:
+        bot.remove_webhook()
+        time.sleep(1)
+        bot.set_webhook(url=f"{RENDER_URL}/webhook")
+        print(f"[WEBHOOK] Aktif: {RENDER_URL}/webhook")
+    else:
+        print("[WARNING] RENDER_EXTERNAL_URL tiada — webhook tidak ditetapkan.")
+
     if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
-        try: bot.send_message(ADMIN_CHAT_ID, "🟢 <b>HELLO, NOVA7 NOW ACTIVE.</b>\nLink to Render established.\n\n⚙️ <i>Module Upgrades Loaded: RSI Wilder, ATR SL/TP, EMA Filter, Real-Time Tracker.</i>", parse_mode="HTML")
-        except Exception: pass
+        try: bot.send_message(ADMIN_CHAT_ID, "🟢 <b>HELLO, ALPHA V2 NOW ACTIVE.</b>\nLink to Render established.", parse_mode="HTML")
+        except: pass
 
     threading.Thread(target=run_trade_tracker_loop, daemon=True).start()
-    threading.Thread(target=run_scanner_loop, daemon=True).start()
-    #threading.Thread(target=bot.infinity_polling, daemon=True).start()
-    
+    threading.Thread(target=run_scanner_loop,       daemon=True).start()
+
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
