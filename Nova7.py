@@ -11,6 +11,7 @@ import sys
 import html
 import json
 import logging
+from journal_system import JournalSystem
 
 # ==========================================
 # LOGGING SISTEM (PENGENDALIAN RALAT PROPER) [Point 8]
@@ -36,6 +37,7 @@ bot.remove_webhook()
 time.sleep(1)
 is_scanning = True 
 trades_lock = threading.Lock() # Untuk elak fail rosak bila update serentak
+journal = JournalSystem(system_name="Nova7")
 
 # ==========================================
 # 2. DUMMY WEB SERVER (RENDER KEEP-ALIVE)
@@ -320,7 +322,15 @@ def dispatch_signal(chat_id, coin_name, symbol, rank, ath_change, vol_multiplier
     try:
         sent = bot.send_message(chat_id, msg, reply_markup=markup, disable_web_page_preview=True)
         # [Point 3] Trade Tracker Simpan Data
-        if sent: save_trade(sent.message_id, symbol, coin_id, sl, tp1, tp2, tp3)
+        if sent:
+            save_trade(sent.message_id, symbol, coin_id, sl, tp1, tp2, tp3)
+            # [JOURNAL] Catat signal ke journal
+            journal.log_signal(
+                symbol=symbol, coin_id=coin_id, entry_price=current_price,
+                sl=sl, tp1=tp1, tp2=tp2, tp3=tp3,
+                grade=grade, coin_name=coin_name,
+                risk_tier=risk_tier, msg_id=sent.message_id,
+            )
     except Exception as e:
         admin_log(f"Gagal hantar signal {symbol}", e)
         logger.error(f"[ERROR LOG] Mesej Telegram gagal dihantar: {e}")
@@ -385,6 +395,16 @@ def run_trade_tracker_loop():
                     bot.send_message(TELEGRAM_CHAT_ID, reply_text, reply_to_message_id=int(msg_id), parse_mode="HTML")
                     trades[msg_id]["status"] = new_status
                     updated = True
+                    # [JOURNAL] Kemaskini outcome
+                    outcome_map = {
+                        "TP1_HIT": "TP1_HIT", "TP2_HIT": "TP2_HIT",
+                        "COMPLETED": "TP3_HIT", "STOP_LOSS": "STOP_LOSS"
+                    }
+                    journal.update_outcome(
+                        coin_id=trade["coin_id"],
+                        outcome=outcome_map.get(new_status, new_status),
+                        exit_price=price_now,
+                    )
                 except Exception as e:
                     logger.error(f"[ERROR LOG] Gagal hantar reply tracker: {e}")
                     
@@ -680,5 +700,8 @@ if __name__ == "__main__":
 
     threading.Thread(target=run_trade_tracker_loop, daemon=True).start()
     threading.Thread(target=run_scanner_loop,       daemon=True).start()
+
+    # [JOURNAL] Daftarkan commands /journal & /weekly + auto report Ahad
+    journal.register_commands(bot, ADMIN_CHAT_ID)
 
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
