@@ -467,12 +467,15 @@ def run_scanner_loop():
                 if response.status_code == 429:
                     logger.warning("[RATE LIMIT] Page Scan - Tunggu 60s")
                     time.sleep(60)
-                elif response.status_code == 200: 
+                if response.status_code == 200:
                     top_coins.extend(response.json())
-                time.sleep(2)
+                elif response.status_code == 429:
+                    print(f"[RATE LIMIT] Page {page} — tunggu 90s")
+                    time.sleep(90)
+                time.sleep(4)
             except Exception as e:
-                logger.error(f"Ralat page {page}: {e}")
-                time.sleep(2)
+                print(f"[ERROR] Page fetch: {e}")
+                time.sleep(4)
                 
         cooldown_db = get_cooldowns()
         current_time = time.time()
@@ -499,11 +502,21 @@ def run_scanner_loop():
                 
                 # Aturan kebal Rate Limit (429)
                 if hist_res.status_code == 429:
-                    logger.warning(f"[RATE LIMIT] {coin_id} — tunggu 60s")
-                    time.sleep(60)
-                    continue
+                    wait = 90
+                    print(f"[RATE LIMIT] {coin_id} — tunggu {wait}s")
+                    time.sleep(wait)
+                    # Cuba sekali lagi selepas tunggu
+                    hist_res = requests.get(
+                        hist_url,
+                        params={"vs_currency": "usd", "days": "30", "interval": "daily"},
+                        headers=headers,
+                        timeout=15
+                    )
+                    if hist_res.status_code != 200:
+                        time.sleep(5)
+                        continue
                 elif hist_res.status_code != 200:
-                    time.sleep(2)
+                    time.sleep(5)
                     continue
                     
                 data = hist_res.json()
