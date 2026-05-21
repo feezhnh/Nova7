@@ -8,6 +8,7 @@ import logging
 import sys
 import signal
 import aiohttp
+import requests
 import websockets
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
