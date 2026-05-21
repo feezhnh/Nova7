@@ -1,6 +1,5 @@
-telebot
-flask
+websockets
+pyTelegramBotAPI
+Flask
 requests
-numpy
-gspread
-oauth2client
+aiohttp
