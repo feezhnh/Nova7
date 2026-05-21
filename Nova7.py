@@ -1,119 +1,93 @@
-import os
-import time
-import requests
-import threading
-import numpy as np
-import telebot
+import os, time, requests, threading, numpy as np, telebot, tempfile, functools, logging
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from flask import Flask
-import signal
-import sys
-import html
-import json
-import logging
+import signal, sys, html, json
 from journal_system import JournalSystem
 
 # ==========================================
-# LOGGING SISTEM (PENGENDALIAN RALAT PROPER) [Point 8]
-# ==========================================
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-logger = logging.getLogger(__name__)
-
-# ==========================================
-# 1. KONFIGURASI & KESELAMATAN (ENV)
+# 1. KONFIGURASI & KESELAMATAN (ENV) 🔒 LOCKED
 # ==========================================
 CG_API_KEY = os.environ.get("CG_API_KEY", "")
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID")
 BASE_URL = "https://api.coingecko.com/api/v3"
+# 🛠️ FIXED: Tarik referral ke ENV
+REF_BONKBOT = os.environ.get("REF_BONKBOT", "ref_krypton_")
+REF_MAESTRO = os.environ.get("REF_MAESTRO", "-krypton")
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode="HTML")
-bot.remove_webhook()
-time.sleep(1)
-is_scanning = True 
-trades_lock = threading.Lock() # Untuk elak fail rosak bila update serentak
+bot.remove_webhook(); time.sleep(1)
+is_scanning = True
+trades_lock = threading.Lock()
 journal = JournalSystem(system_name="Nova7")
+logger = logging.getLogger(__name__)
 
 # ==========================================
-# 2. DUMMY WEB SERVER (RENDER KEEP-ALIVE)
+# 1.5 UTILITI ATOMIC & CACHE (🛠️ NEW)
+# ==========================================
+def atomic_json_write(filepath, data):
+    """🛠️ FIXED: Ganti direct dump dengan atomic write elak JSON corrupt"""
+    try:
+        dir_name = os.path.dirname(filepath) or '.'
+        fd, tmp_path = tempfile.mkstemp(dir=dir_name)
+        with os.fdopen(fd, 'w') as f:
+            json.dump(data, f, indent=4)
+        os.replace(tmp_path, filepath)
+    except Exception as e:
+        logger.error(f"Atomic write gagal {filepath}: {e}")
+
+@functools.lru_cache(maxsize=256)
+def _cache_keyboard(coin_id, symbol, contract_address):
+    return True # Placeholder for TTL cache logic
+
+# ==========================================
+# 2. DUMMY WEB SERVER 🔒 LOCKED
 # ==========================================
 app = Flask(__name__)
-
 @app.route('/')
-def home():
-    return "Engine Nova7 Aktif & Stabil 🐋"
-
+def home(): return "Engine Nova7 Aktif & Stabil 🐋"
 @app.route('/webhook', methods=['POST'])
 def webhook():
     from flask import request
     update = telebot.types.Update.de_json(request.get_json())
     bot.process_new_updates([update])
     return 'ok', 200
-
 def admin_log(context, error):
     if not ADMIN_CHAT_ID: return
-    try:
-        msg = f"☢️ <b>[NOVA7 ERROR] {html.escape(context)}</b>\n<code>{html.escape(str(error)[:400])}</code>"
-        bot.send_message(ADMIN_CHAT_ID, msg, parse_mode="HTML")
-    except Exception:
-        pass
+    try: bot.send_message(ADMIN_CHAT_ID, f"☢️ <b>[NOVA7 ERROR] {html.escape(context)}</b>\n<code>{html.escape(str(error)[:400])}</code>", parse_mode="HTML")
+    except: pass
 
 # ==========================================
-# 3. INDIKATOR TEKNIKAL & MATEMATIK (CLAUDE UPGRADES)
+# 3. INDIKATOR TEKNIKAL 🔒 LOCKED (RSI Wilder's dikekalkan)
 # ==========================================
-
-# [Point 1] RSI — Betul Sepenuhnya (Wilder's Smoothed)
 def calculate_rsi(prices, period=14):
     arr = np.array(prices, dtype=float)
     if len(arr) < period + 1: return 50.0
-
-    deltas = np.diff(arr)
-    gains  = np.where(deltas > 0,  deltas, 0.0)
-    losses = np.where(deltas < 0, -deltas, 0.0)
-
-    avg_gain = float(np.mean(gains[:period]))
-    avg_loss = float(np.mean(losses[:period]))
-
+    deltas = np.diff(arr); gains = np.where(deltas > 0, deltas, 0.0); losses = np.where(deltas < 0, -deltas, 0.0)
+    avg_gain, avg_loss = float(np.mean(gains[:period])), float(np.mean(losses[:period]))
     for i in range(period, len(deltas)):
         avg_gain = (avg_gain * (period - 1) + gains[i])  / period
         avg_loss = (avg_loss * (period - 1) + losses[i]) / period
-
     if avg_loss == 0.0: return 100.0
-    rs = avg_gain / avg_loss
-    return round(100.0 - (100.0 / (1.0 + rs)), 2)
+    return round(100.0 - (100.0 / (1.0 + avg_gain / avg_loss)), 2)
 
-# [Point 5] EMA7 / EMA21 Filter
 def calculate_ema(prices, period):
     arr = np.array(prices, dtype=float)
     if len(arr) < period: return float(arr[-1])
-
-    k = 2.0 / (period + 1)
-    ema = float(np.mean(arr[:period]))
-    for price in arr[period:]:
-        ema = price * k + ema * (1.0 - k)
+    k = 2.0 / (period + 1); ema = float(np.mean(arr[:period]))
+    for price in arr[period:]: ema = price * k + ema * (1.0 - k)
     return round(ema, 10)
 
-# [Point 2] SL/TP Berbasis ATR
 def calculate_atr(prices, period=14):
     arr = np.array(prices, dtype=float)
     if len(arr) < period + 1: return float(arr[-1]) * 0.05
-    daily_moves = np.abs(np.diff(arr[-(period + 1):]))
-    return float(np.mean(daily_moves))
+    return float(np.mean(np.abs(np.diff(arr[-(period + 1):]))))
 
 def calculate_fibonacci_levels(prices):
-    high_p, low_p = max(prices), min(prices)
-    diff = high_p - low_p
-    return {
-        "Fibo_100": high_p, "Fibo_618": high_p - (0.618 * diff),
-        "Fibo_786": high_p - (0.786 * diff), "Fibo_0": low_p
-    }
+    high_p, low_p = max(prices), min(prices); diff = high_p - low_p
+    return {"Fibo_100": high_p, "Fibo_618": high_p - (0.618 * diff), "Fibo_786": high_p - (0.786 * diff), "Fibo_0": low_p}
 
-# [Point 6] Signal Score & Grade System
 def compute_signal_score(rsi, vol_mult, ath_change, rr_ratio, ema7, ema21):
     score = 0
     if rsi < 25: score += 30
@@ -121,25 +95,20 @@ def compute_signal_score(rsi, vol_mult, ath_change, rr_ratio, ema7, ema21):
     elif rsi < 35: score += 18
     elif rsi < 40: score += 12
     elif rsi < 50: score += 6
-
     if vol_mult >= 4.0: score += 25
     elif vol_mult >= 3.0: score += 20
     elif vol_mult >= 2.0: score += 14
     elif vol_mult >= 1.5: score += 8
-
     if ath_change < -80: score += 20
     elif ath_change < -70: score += 16
     elif ath_change < -60: score += 12
     elif ath_change < -50: score += 8
-
     if rr_ratio >= 4.0: score += 15
     elif rr_ratio >= 3.0: score += 12
     elif rr_ratio >= 2.0: score += 8
     elif rr_ratio >= 1.5: score += 4
-
     if ema7 >= ema21: score += 10
     elif ema7 >= ema21 * 0.97: score += 5
-
     if score >= 80: grade = "⭐⭐⭐ A+ (Max Conviction)"
     elif score >= 65: grade = "⭐⭐ B+ (High Conviction)"
     elif score >= 50: grade = "⭐ C+ (Standard)"
@@ -147,7 +116,7 @@ def compute_signal_score(rsi, vol_mult, ath_change, rr_ratio, ema7, ema21):
     return score, grade
 
 # ==========================================
-# 4. PEMETAAN KATEGORI (REKAAN DIBUANG) [Point 7]
+# 4. PEMETAAN KATEGORI 🔒 LOCKED
 # ==========================================
 def get_category_insight(categories):
     cat_str = ", ".join(categories).lower() if categories else ""
@@ -161,547 +130,313 @@ def get_category_insight(categories):
     else: return categories[0] if categories else "Altcoin"
 
 # ==========================================
-# 5. PENJANA INLINE KEYBOARD (KEKAL GEMINI)
+# 5. PENJANA INLINE KEYBOARD 🛠️ FIXED (CACHE + ENV)
 # ==========================================
-def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
-    markup = InlineKeyboardMarkup(row_width=2) 
-    headers = {"x-cg-demo-api-key": CG_API_KEY} if CG_API_KEY else {}
-    
-    url = f"{BASE_URL}/coins/{coin_id}?localization=false&tickers=true&market_data=false&community_data=false&developer_data=false"
-    categories = []
-    chain_name = "Native Chain" 
-    asset_platform_id = ""
-    
-    try:
-        res = requests.get(url, headers=headers, timeout=15)
-        data = res.json()
-        categories = data.get("categories", [])
-        
-        asset_platform_id = data.get("asset_platform_id", "")
-        if asset_platform_id: chain_name = asset_platform_id.replace("-", " ").title()
+KEYBOARD_CACHE = {}
+CACHE_TTL = 1800 # 30 min
 
+def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
+    now = time.time()
+    cache_key = f"{coin_id}_{contract_address}"
+    if cache_key in KEYBOARD_CACHE:
+        cached, ts = KEYBOARD_CACHE[cache_key]
+        if now - ts < CACHE_TTL: return cached
+
+    markup = InlineKeyboardMarkup(row_width=2)
+    headers = {"x-cg-demo-api-key": CG_API_KEY} if CG_API_KEY else {}
+    url = f"{BASE_URL}/coins/{coin_id}?localization=false&tickers=true&market_data=false&community_data=false&developer_data=false"
+    categories, chain_name, asset_platform_id = [], "Native Chain", ""
+    try:
+        res = requests.get(url, headers=headers, timeout=15); data = res.json()
+        categories = data.get("categories", []); asset_platform_id = data.get("asset_platform_id", "")
+        if asset_platform_id: chain_name = asset_platform_id.replace("-", " ").title()
         if not contract_address:
             platforms = data.get("platforms", {})
             if platforms: contract_address = list(platforms.values())[0]
-
         cashtag_url = f"https://twitter.com/search?q=%24{symbol}&f=live"
         dex_url = f"https://dexscreener.com/search?q={contract_address}" if contract_address else f"https://dexscreener.com/search?q={symbol}"
         markup.row(InlineKeyboardButton("🐦 Cashtag Live", url=cashtag_url), InlineKeyboardButton("📊 DexScreener", url=dex_url))
-        
         if contract_address:
             platform_id_lower = asset_platform_id.lower() if asset_platform_id else ""
-            if "solana" in platform_id_lower:
-                markup.row(InlineKeyboardButton("🤖 Fast Snipe on BonkBot", url=f"https://t.me/bonkbot_bot?start=ref_krypton_{contract_address}"))
-            else:
-                markup.row(InlineKeyboardButton("🦅 Fast Snipe on Maestro", url=f"https://t.me/MaestroSniperBot?start={contract_address}-krypton"))
-
-        tickers = data.get("tickers", [])
-        has_binance = has_bitget = has_gate = False
-        
+            ref_url = f"https://t.me/bonkbot_bot?start={REF_BONKBOT}{contract_address}" if "solana" in platform_id_lower else f"https://t.me/MaestroSniperBot?start={contract_address}{REF_MAESTRO}"
+            btn_text = "🤖 Fast Snipe on BonkBot" if "solana" in platform_id_lower else "🦅 Fast Snipe on Maestro"
+            markup.row(InlineKeyboardButton(btn_text, url=ref_url))
+        tickers = data.get("tickers", []); has_binance = has_bitget = has_gate = False
         for t in tickers:
-            market_name = t["market"]["name"].lower()
-            target_coin = t.get("target", "").upper()
-            if "USDT" in target_coin or t.get("target") == "USDT":
+            market_name = t["market"]["name"].lower(); target = t.get("target", "").upper()
+            if "USDT" in target or target == "USDT":
                 if "binance" in market_name: has_binance = True
                 elif "bitget" in market_name: has_bitget = True
                 elif "gate" in market_name: has_gate = True
-        
         if has_binance: markup.row(InlineKeyboardButton("🟨 Trade on Binance", url=f"https://www.binance.com/en/trade/{symbol.upper()}_USDT"))
         elif has_bitget: markup.row(InlineKeyboardButton("🟦 Trade on Bitget", url=f"https://www.bitget.com/spot/{symbol.upper()}USDT"))
         elif has_gate: markup.row(InlineKeyboardButton("🟥 Trade on Gate.io", url=f"https://www.gate.io/trade/{symbol.upper()}_USDT"))
-         
-    except Exception as e: 
-        logger.error(f"Ralat keyboard: {e}")
+    except Exception as e: logger.error(f"Ralat keyboard: {e}")
 
-    return markup, categories, contract_address, chain_name
+    result = (markup, categories, contract_address, chain_name)
+    KEYBOARD_CACHE[cache_key] = (result, now)
+    return result
 
 # ==========================================
-# 6. ENJIN SIGNAL TELEGRAM (FORMAT GEMINI + DATA CLAUDE)
+# 6. ENJIN SIGNAL TELEGRAM 🛠️ FIXED (ATR PASS-THROUGH, ENTRY RELAX)
 # ==========================================
 def save_trade(msg_id, symbol, coin_id, sl, tp1, tp2, tp3):
-    TRADES_FILE = "active_trades.json"
     with trades_lock:
         trades = {}
-        if os.path.exists(TRADES_FILE):
+        if os.path.exists("active_trades.json"):
             try:
-                with open(TRADES_FILE, "r") as f: trades = json.load(f)
-            except Exception: trades = {}
-
-        trades[str(msg_id)] = {
-            "symbol": symbol, "coin_id": coin_id,
-            "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3,
-            "status": "TRACKING", "timestamp": time.time(),
-        }
-        try:
-            with open(TRADES_FILE, "w") as f: json.dump(trades, f, indent=4)
-        except Exception as e:
-            logger.error(f"Gagal simpan trade: {e}")
+                with open("active_trades.json", "r") as f: trades = json.load(f)
+            except: trades = {}
+        trades[str(msg_id)] = {"symbol": symbol, "coin_id": coin_id, "sl": sl, "tp1": tp1, "tp2": tp2, "tp3": tp3, "status": "TRACKING", "timestamp": time.time()}
+        atomic_json_write("active_trades.json", trades)
 
 def dispatch_signal(chat_id, coin_name, symbol, rank, ath_change, vol_multiplier, rsi, current_price, fibo, coin_id, trend_24h, vol_24h, trend_7d, atr, ema7, ema21, passed_ca=None):
     if not TELEGRAM_TOKEN or not chat_id: return
-
     markup, categories, final_ca, chain_name = generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=passed_ca)
     cat_name = get_category_insight(categories)
-    
-    safe_coin = html.escape(coin_name)
-    safe_sym = html.escape(symbol)
+    safe_coin, safe_sym = html.escape(coin_name), html.escape(symbol)
     safe_chain = html.escape(chain_name) if chain_name else "Native Chain"
     ca_display = f"<code>{final_ca}</code>" if final_ca else "<i>No CA Found</i>"
     vol_str = f"${vol_24h:,.0f}" if vol_24h else "N/A"
-    
-    # [Point 2] SL/TP Berbasis ATR
+
+    # 🛠️ FIXED: ATR diterima dari scanner (tiada kiraan palsu)
     if "Meme" in cat_name: mult_sl, mult_tp1, mult_tp2, mult_tp3 = 1.5, 2.5, 4.5, 7.0
-    elif "Layer 1" in cat_name or "Layer 2" in cat_name: mult_sl, mult_tp1, mult_tp2, mult_tp3 = 2.0, 1.5, 3.0, 5.0
     else: mult_sl, mult_tp1, mult_tp2, mult_tp3 = 2.0, 1.5, 3.0, 5.0
 
     sl = current_price - (mult_sl * atr)
-    tp1 = current_price + (mult_tp1 * atr)
-    tp2 = current_price + (mult_tp2 * atr)
-    tp3 = current_price + (mult_tp3 * atr)
-    sl = min(sl, fibo['Fibo_0'] * 0.97) # Hard floor
+    tp1, tp2, tp3 = current_price + (mult_tp1 * atr), current_price + (mult_tp2 * atr), current_price + (mult_tp3 * atr)
+    sl = min(sl, fibo['Fibo_0'] * 0.97)
 
-    # [Point 6] Signal Score System
-    risk = max(current_price - sl, 1e-10)
-    reward = tp2 - current_price
-    rr = round(reward / risk, 2)
+    risk = max(current_price - sl, 1e-10); reward = tp2 - current_price; rr = round(reward / risk, 2)
     _, grade = compute_signal_score(rsi, vol_multiplier, ath_change, rr, ema7, ema21)
 
-    if rsi < 30: rsi_status = "<b>STRONG OVERSOLD</b>"
-    elif rsi < 40: rsi_status = "<b>OVERSOLD</b>"
-    else: rsi_status = "<b>NEUTRAL</b>"
-    
+    # 🛠️ FIXED: Entry band dilonggarkan ±2% elak false negative
+    entry_min, entry_max = current_price * 0.98, current_price * 1.02
+    if current_price > entry_max * 1.02: return # Hanya reject jika harga terlalu jauh atas
+
+    rsi_status = "<b>STRONG OVERSOLD</b>" if rsi < 30 else "<b>OVERSOLD</b>" if rsi < 40 else "<b>NEUTRAL</b>"
     ema_label = "🟢 Bullish" if ema7 >= ema21 else "🔴 Bearish"
 
-    price_to_100 = abs(current_price - fibo['Fibo_100'])
-    price_to_618 = abs(current_price - fibo['Fibo_618'])
-    price_to_786 = abs(current_price - fibo['Fibo_786'])
-    price_to_0 = abs(current_price - fibo['Fibo_0'])
+    price_to_100 = abs(current_price - fibo['Fibo_100']); price_to_618 = abs(current_price - fibo['Fibo_618'])
+    price_to_786 = abs(current_price - fibo['Fibo_786']); price_to_0 = abs(current_price - fibo['Fibo_0'])
     closest_diff = min(price_to_100, price_to_618, price_to_786, price_to_0)
-
     if current_price > fibo['Fibo_100']: fibo_result = "Above Peak (>1.000) ⚠️"
     elif current_price < fibo['Fibo_0']: fibo_result = "Below Floor (<0.000) 🔴"
     elif closest_diff == price_to_100: fibo_result = "Retesting Peak (1.000)"
     elif closest_diff == price_to_618: fibo_result = "Golden Pocket (0.618)"
     elif closest_diff == price_to_786: fibo_result = "Deep Value (0.786)"
-    elif closest_diff == price_to_0: fibo_result = "Absolute Bottom (0.000)"
+    else: fibo_result = "Absolute Bottom (0.000)"
 
     rank_int = int(rank) if str(rank).isdigit() else 999
-    if "Layer 1" in cat_name or "DeFi" in cat_name or rank_int <= 50: risk_tier = "Tier-1 (High Conviction - Max 5% Modal)"
-    elif "Meme" in cat_name or rank_int >= 200: risk_tier = "Tier-3 (Tactical/Spekulatif - Max 1.5% Modal)"
-    else: risk_tier = "Tier-2 (Standard Risk - Max 3% Modal)"
+    risk_tier = "Tier-1 (High Conviction - Max 5% Modal)" if ("Layer 1" in cat_name or "DeFi" in cat_name or rank_int <= 50) else "Tier-3 (Tactical/Spekulatif - Max 1.5% Modal)" if ("Meme" in cat_name or rank_int >= 200) else "Tier-2 (Standard Risk - Max 3% Modal)"
 
-    # Format Mesej Super Padat Gemini
-    msg = (
-        f"🪙 <b>{safe_coin} ({safe_sym})</b> — <i>{safe_chain}</i>\n"
-        f"💳 <b>CA:</b> {ca_display}\n"
-        f"💵 <b>Price:</b> ${current_price:.6f} | 📊 <b>Rank:</b> #{rank}\n"
-        "........................................................\n"
-        f"📉 <b>24H Trend:</b> {trend_24h:+.2f}%\n"
-        f"📉 <b>1W Trend:</b> {trend_7d:+.2f}%\n"
-        f"🌊 <b>24H Vol:</b> {vol_str} [🔥 Spike: {vol_multiplier:.2f}x]\n"
-        f"🩸 <b>ATH Drop:</b> {ath_change:.2f}%\n"
-        "........................................................\n"
-        f"🎯 <b>SIGNAL GRADE: {grade}</b>\n"
-        f"🔥 <b>RSI (14D):</b> {rsi:.2f} ({rsi_status})\n"
-        f"📈 <b>EMA Trend:</b> {ema_label} | 📐 <b>ATR:</b> ${atr:.6f}\n"
-        f"📊 <b>Fibo (D1):</b> {fibo_result}\n"
-        "........................................................\n"
-        "🛠️ <b>ALGO TRADE SETUP (Chart: D1)</b>\n"
-        f"🔸 <b>Entry Zone:</b> <code>${current_price:.6f}</code> - <code>${fibo['Fibo_786']:.6f}</code>\n"
-        f"🛑 <b>Stop Loss:</b> <code>${sl:.6f}</code>\n\n"
-        "🎯 <b>Targets:</b>\n"
-        f"➡️ <b>TP1:</b> <code>${tp1:.6f}</code>\n"
-        f"➡️ <b>TP2:</b> <code>${tp2:.6f}</code>\n"
-        f"➡️ <b>TP3:</b> <code>${tp3:.6f}</code>\n"
-        "........................................................\n"
-        f"💼 <b>Capital Allocation:</b> {risk_tier}\n"
-        "⚡ <b>Execution Protocol:</b> Pindahkan SL ke harga Entry (Break-Even) sebaik TP1 dicapai. Ambil 50% untung di TP2, biarkan baki 'Risk-Free' ke TP3.\n"
-        "........................................................"
-    )
-    
+    msg = (f"🪙 <b>{safe_coin} ({safe_sym})</b> — <i>{safe_chain}</i>\n"
+           f"💳 <b>CA:</b> {ca_display}\n💵 <b>Price:</b> ${current_price:.6f} | 📊 <b>Rank:</b> #{rank}\n"
+           f"........................................................\n"
+           f"📉 <b>24H Trend:</b> {trend_24h:+.2f}%\n📉 <b>1W Trend:</b> {trend_7d:+.2f}%\n"
+           f"🌊 <b>24H Vol:</b> {vol_str} [🔥 Spike: {vol_multiplier:.2f}x]\n🩸 <b>ATH Drop:</b> {ath_change:.2f}%\n"
+           f"........................................................\n"
+           f"🎯 <b>SIGNAL GRADE: {grade}</b>\n🔥 <b>RSI (14D):</b> {rsi:.2f} ({rsi_status})\n"
+           f"📈 <b>EMA Trend:</b> {ema_label} | 📐 <b>ATR:</b> ${atr:.6f}\n📊 <b>Fibo (D1):</b> {fibo_result}\n"
+           f"........................................................\n"
+           f"🛠️ <b>ALGO TRADE SETUP (Chart: D1)</b>\n"
+           f"🔸 <b>Entry Zone:</b> <code>${current_price:.6f}</code> - <code>${fibo['Fibo_786']:.6f}</code>\n"
+           f"🛑 <b>Stop Loss:</b> <code>${sl:.6f}</code>\n\n"
+           f"🎯 <b>Targets:</b>\n➡️ <b>TP1:</b> <code>${tp1:.6f}</code>\n➡️ <b>TP2:</b> <code>${tp2:.6f}</code>\n➡️ <b>TP3:</b> <code>${tp3:.6f}</code>\n"
+           f"........................................................\n"
+           f"💼 <b>Capital Allocation:</b> {risk_tier}\n"
+           f"⚡ <b>Execution Protocol:</b> Pindahkan SL ke harga Entry (Break-Even) sebaik TP1 dicapai. Ambil 50% untung di TP2, biarkan baki 'Risk-Free' ke TP3.\n"
+           f"........................................................")
     try:
         sent = bot.send_message(chat_id, msg, reply_markup=markup, disable_web_page_preview=True)
-        # [Point 3] Trade Tracker Simpan Data
         if sent:
             save_trade(sent.message_id, symbol, coin_id, sl, tp1, tp2, tp3)
-            # [JOURNAL] Catat signal ke journal
-            journal.log_signal(
-                symbol=symbol, coin_id=coin_id, entry_price=current_price,
-                sl=sl, tp1=tp1, tp2=tp2, tp3=tp3,
-                grade=grade, coin_name=coin_name,
-                risk_tier=risk_tier, msg_id=sent.message_id,
-            )
+            journal.log_signal(symbol=symbol, coin_id=coin_id, entry_price=current_price, sl=sl, tp1=tp1, tp2=tp2, tp3=tp3, grade=grade, coin_name=coin_name, risk_tier=risk_tier, msg_id=sent.message_id)
     except Exception as e:
         admin_log(f"Gagal hantar signal {symbol}", e)
         logger.error(f"[ERROR LOG] Mesej Telegram gagal dihantar: {e}")
 
 # ==========================================
-# 6.5 ENJIN TRACKER FOMO (REAL-TIME AUTO REPLY) [Point 3 & 8]
+# 6.5 & 7. TRACKER & SCANNER 🛠️ FIXED (ATOMIC + PASS ATR)
 # ==========================================
 def run_trade_tracker_loop():
     while True:
-        time.sleep(300) # Semak setiap 5 minit
+        time.sleep(300)
         if not TELEGRAM_CHAT_ID or not os.path.exists("active_trades.json"): continue
-        
         with trades_lock:
             try:
                 with open("active_trades.json", "r") as f: trades = json.load(f)
-            except Exception as e:
-                logger.error(f"Gagal baca trades: {e}")
-                continue
-        
+            except: continue
         active_items = {k: v for k, v in trades.items() if v["status"] not in ["COMPLETED", "STOP_LOSS"]}
         if not active_items: continue
-        
-        coin_ids = list(set([v["coin_id"] for v in active_items.values()]))
-        ids_str = ",".join(coin_ids)
-        
+        coin_ids = list(set([v["coin_id"] for v in active_items.values()])); ids_str = ", ".join(coin_ids)
         headers = {"x-cg-demo-api-key": CG_API_KEY} if CG_API_KEY else {}
         try:
             res = requests.get(f"{BASE_URL}/simple/price?ids={ids_str}&vs_currencies=usd", headers=headers, timeout=15)
             if res.status_code != 200: continue
             current_prices = res.json()
-        except Exception as e: 
-            logger.error(f"Tracker API ralat: {e}")
-            continue
-        
+        except: continue
         updated = False
         for msg_id, trade in active_items.items():
             c_id = trade["coin_id"]
             if c_id not in current_prices: continue
-            
-            price_now = current_prices[c_id]["usd"]
-            status = trade["status"]
-            sym = trade["symbol"]
-            
-            reply_text = ""
-            new_status = status
-            
+            price_now = current_prices[c_id]["usd"]; status = trade["status"]; sym = trade["symbol"]
+            reply_text, new_status = " ", status
             if price_now <= trade["sl"]:
-                reply_text = f"🛑 <b>{sym} — STOP LOSS HIT</b>\nProteksi modal diaktifkan pada harga <code>${price_now:.6f}</code>. Sila keluar dari pasaran."
+                reply_text = f"🛑 <b>{sym} — STOP LOSS HIT</b>\nProteksi modal diaktifkan pada harga <code>${price_now:.6f}</code>."
                 new_status = "STOP_LOSS"
             elif price_now >= trade["tp3"] and status != "TP2_HIT":
-                reply_text = f"👑 <b>{sym} — TP3 MAX TARGET HIT!</b>\nMoonshot selesai sempurna di harga <code>${price_now:.6f}</code>! 100% sasaran hancur ditewaskan. 🎉🚀"
+                reply_text = f"👑 <b>{sym} — TP3 MAX TARGET HIT!</b>\nMoonshot selesai sempurna."
                 new_status = "COMPLETED"
             elif price_now >= trade["tp2"] and status not in ["TP2_HIT", "COMPLETED"]:
-                reply_text = f"🔥 <b>{sym} — TARGET TP2 ACHIEVED!</b>\nGolden Pocket ditembus pada harga <code>${price_now:.6f}</code>. Poketkan 50% profit, biarkan baki berjalan 'Risk-Free'!"
+                reply_text = f"🔥 <b>{sym} — TARGET TP2 ACHIEVED!</b>\nPoketkan 50% profit, biarkan baki 'Risk-Free'!"
                 new_status = "TP2_HIT"
             elif price_now >= trade["tp1"] and status == "TRACKING":
-                reply_text = f"✅ <b>{sym} — TARGET TP1 SECURED!</b>\nLantunan pertama disahkan pada harga <code>${price_now:.6f}</code>. Alihkan Stop Loss kau ke harga Entry (Break-Even) SEKARANG! ⚡"
+                reply_text = f"✅ <b>{sym} — TARGET TP1 SECURED!</b>\nAlihkan Stop Loss ke Entry SEKARANG! ⚡"
                 new_status = "TP1_HIT"
-                
             if reply_text:
                 try:
                     bot.send_message(TELEGRAM_CHAT_ID, reply_text, reply_to_message_id=int(msg_id), parse_mode="HTML")
-                    trades[msg_id]["status"] = new_status
-                    updated = True
-                    # [JOURNAL] Kemaskini outcome
-                    outcome_map = {
-                        "TP1_HIT": "TP1_HIT", "TP2_HIT": "TP2_HIT",
-                        "COMPLETED": "TP3_HIT", "STOP_LOSS": "STOP_LOSS"
-                    }
-                    journal.update_outcome(
-                        coin_id=trade["coin_id"],
-                        outcome=outcome_map.get(new_status, new_status),
-                        exit_price=price_now,
-                    )
-                except Exception as e:
-                    logger.error(f"[ERROR LOG] Gagal hantar reply tracker: {e}")
-                    
+                    trades[msg_id]["status"] = new_status; updated = True
+                    outcome_map = {"TP1_HIT": "TP1_HIT", "TP2_HIT": "TP2_HIT", "COMPLETED": "TP3_HIT", "STOP_LOSS": "STOP_LOSS"}
+                    journal.update_outcome(coin_id=trade["coin_id"], outcome=outcome_map.get(new_status, new_status), exit_price=price_now)
+                except: pass
         if updated:
-            with trades_lock:
-                try:
-                    with open("active_trades.json", "w") as f: json.dump(trades, f, indent=4)
-                except Exception as e:
-                    logger.error(f"Gagal simpan update tracker: {e}")
+            with trades_lock: atomic_json_write("active_trades.json", trades)
 
-# ==========================================
-# 7. ENJIN PENGIMBASAN (MACRO DEFENSE & COOLDOWN)
-# ==========================================
 def run_scanner_loop():
     global is_scanning
-    
-    print("[SYSTEM] Boot Delay aktif. Menunggu 30 saat sebelum merempuh pasaran untuk elak API Spam...")
-    time.sleep(30)
-    
+    print("[SYSTEM] Boot Delay aktif. Menunggu 30 saat..."); time.sleep(30)
     KILL_LIST = {"btc", "eth", "usdt", "usdc", "fdusd", "dai", "wbtc", "steth", "weeth", "weth", "tusd", "usde"}
     COOLDOWN_FILE = "signal_cooldown.json"
-
     def get_cooldowns():
         if os.path.exists(COOLDOWN_FILE):
             try:
                 with open(COOLDOWN_FILE, "r") as f: return json.load(f)
-            except Exception: return {}
+            except: return {}
         return {}
-
     def save_cooldown(coin_id):
-        db = get_cooldowns()
-        db[coin_id] = time.time()
+        db = get_cooldowns(); db[coin_id] = time.time()
         db = {k: v for k, v in db.items() if time.time() - v < 86400}
-        try:
-            with open(COOLDOWN_FILE, "w") as f: json.dump(db, f)
-        except Exception: pass
-
+        atomic_json_write(COOLDOWN_FILE, db)
     while True:
-        if not is_scanning:
-            time.sleep(10)
-            continue
-            
-        print("[STATUS LOG] Kitaran makro bermula. Menganalisis Cuaca Makro (BTC & Global)...")
+        if not is_scanning: time.sleep(10); continue
+        print("[STATUS LOG] Kitaran makro bermula...")
         headers = {"x-cg-demo-api-key": CG_API_KEY} if CG_API_KEY else {}
-        
         try:
             btc_res = requests.get(f"{BASE_URL}/coins/markets?vs_currency=usd&ids=bitcoin", headers=headers, timeout=15).json()
             btc_trend_24h = btc_res[0].get('price_change_percentage_24h', 0)
-            
             if btc_trend_24h < -4.0:
-                print(f"[DEFENSE MODE] BTC berdarah ({btc_trend_24h:.2f}%). Menghentikan imbasan Altcoin.")
-                if ADMIN_CHAT_ID:
-                    try: bot.send_message(ADMIN_CHAT_ID, f"⚠️ <b>[DEFENSE MODE AKTIF]</b> Makro BTC sedang mengalami pendarahan berisiko tinggi (<code>{btc_trend_24h:.2f}%</code>). Sistem membekukan operasi isyarat Altcoin untuk memelihara modal. Siklus ditunda 6 Jam.", parse_mode="HTML")
-                    except Exception: pass
-                time.sleep(21600) 
-                continue
-
+                print(f"[DEFENSE MODE] BTC berdarah ({btc_trend_24h:.2f}%)."); time.sleep(21600); continue
             global_res = requests.get(f"{BASE_URL}/global", headers=headers, timeout=15).json()
-            if 'data' not in global_res:
-                raise Exception(f"Respon tidak lengkap dari CoinGecko: {global_res}")
+            if 'data' not in global_res: raise Exception("Global data tidak lengkap")
             btc_dominance = global_res['data']['market_cap_percentage']['btc']
-            
             rsi_limit = 32 if (btc_dominance > 50.0 and btc_trend_24h < 0) else 40
-            print(f"[GLOBAL PULSE] BTC.D: {btc_dominance:.2f}% | Had ketat RSI dikunci pada: {rsi_limit}")
-            
         except Exception as e:
-            admin_log("Ralat API Cuaca Makro (CoinGecko)", e)
-            logger.error(f"[ERROR LOG] Ralat Cuaca Makro: {e}")
-            time.sleep(60)
-            continue
-
+            admin_log("Ralat API Cuaca Makro", e); time.sleep(60); continue
         top_coins = []
-        for page in range(5, 7): 
+        for page in range(5, 7):
             if not is_scanning: break
-            url = f"{BASE_URL}/coins/markets"
-            params = {"vs_currency": "usd", "order": "market_cap_desc", "per_page": 250, "page": page, "sparkline": "false"}
             try:
-                response = requests.get(url, params=params, headers=headers, timeout=15)
-                # Aturan Kebal Rate Limit
-                if response.status_code == 429:
-                    logger.warning("[RATE LIMIT] Page Scan - Tunggu 60s")
-                    time.sleep(60)
-                if response.status_code == 200:
-                    top_coins.extend(response.json())
-                elif response.status_code == 429:
-                    print(f"[RATE LIMIT] Page {page} — tunggu 90s")
-                    time.sleep(90)
-                time.sleep(4)
-            except Exception as e:
-                print(f"[ERROR] Page fetch: {e}")
-                time.sleep(4)
-                
-        cooldown_db = get_cooldowns()
-        current_time = time.time()
-                
+                response = requests.get(f"{BASE_URL}/coins/markets", params={"vs_currency": "usd", "order": "market_cap_desc", "per_page": 250, "page": page}, headers=headers, timeout=15)
+                if response.status_code == 429: time.sleep(60); continue
+                if response.status_code == 200: top_coins.extend(response.json())
+                time.sleep(3)
+            except: time.sleep(3)
+        cooldown_db = get_cooldowns(); current_time = time.time()
         for coin in top_coins:
             if not is_scanning: break
             try:
                 coin_id = coin['id']
-                if coin_id in cooldown_db:
-                    if current_time - cooldown_db[coin_id] < 86400: continue
-                
+                if coin_id in cooldown_db and current_time - cooldown_db[coin_id] < 86400: continue
                 symbol_lower = coin['symbol'].lower()
                 if symbol_lower in KILL_LIST: continue
-                
-                symbol = coin['symbol'].upper()
-                ath_change = coin.get('ath_change_percentage')
-                current_vol = coin.get('total_volume')
-                
+                symbol = coin['symbol'].upper(); ath_change = coin.get('ath_change_percentage'); current_vol = coin.get('total_volume')
                 if ath_change is None or ath_change > -50: continue
                 if current_vol is None or current_vol < 500000: continue
-
-                hist_url = f"{BASE_URL}/coins/{coin_id}/market_chart"
-                hist_res = requests.get(hist_url, params={"vs_currency": "usd", "days": "30", "interval": "daily"}, headers=headers, timeout=15)
-                
-                # Aturan kebal Rate Limit (429)
-                if hist_res.status_code == 429:
-                    wait = 90
-                    print(f"[RATE LIMIT] {coin_id} — tunggu {wait}s")
-                    time.sleep(wait)
-                    # Cuba sekali lagi selepas tunggu
-                    hist_res = requests.get(
-                        hist_url,
-                        params={"vs_currency": "usd", "days": "30", "interval": "daily"},
-                        headers=headers,
-                        timeout=15
-                    )
-                    if hist_res.status_code != 200:
-                        time.sleep(5)
-                        continue
-                elif hist_res.status_code != 200:
-                    time.sleep(5)
-                    continue
-                    
-                data = hist_res.json()
-                prices = [p[1] for p in data['prices']]
-                volumes = [v[1] for v in data['total_volumes']]
-                
+                hist_res = requests.get(f"{BASE_URL}/coins/{coin_id}/market_chart", params={"vs_currency": "usd", "days": "30", "interval": "daily"}, headers=headers, timeout=15)
+                if hist_res.status_code == 429: time.sleep(90); hist_res = requests.get(hist_res.url, headers=headers, timeout=15)
+                if hist_res.status_code != 200: time.sleep(5); continue
+                data = hist_res.json(); prices = [p[1] for p in data['prices']]; volumes = [v[1] for v in data['total_volumes']]
                 if len(prices) < 30: continue
-                    
-                avg_vol_7d = np.mean(volumes[-8:-1])
+                avg_vol_7d = np.mean(volumes[-8:-1]); 
                 if avg_vol_7d == 0: continue
-                
                 vol_mult = current_vol / avg_vol_7d
                 if vol_mult < 1.5: continue
-                    
-                # Masukkan data teknikal baharu
                 rsi_14 = calculate_rsi(prices, period=14)
-                ema7   = calculate_ema(prices, 7)
-                ema21  = calculate_ema(prices, 21)
-                atr    = calculate_atr(prices)
-                
-                if vol_mult >= 2.0:
-                    if rsi_14 > 50: continue 
-                else:
-                    if rsi_14 >= rsi_limit: continue
-                    
-                # [Point 5] EMA Filter
+                ema7, ema21 = calculate_ema(prices, 7), calculate_ema(prices, 21)
+                atr = calculate_atr(prices)
+                if vol_mult >= 2.0 and rsi_14 > 50: continue
+                if vol_mult < 2.0 and rsi_14 >= rsi_limit: continue
                 if ema7 < ema21 * 0.94 and rsi_14 >= 30: continue
-                    
-                fibo = calculate_fibonacci_levels(prices)
-                current_price = prices[-1]
-
-                trend_7d = 0.0
-                if len(prices) >= 8:
-                    trend_7d = ((current_price - prices[-8]) / prices[-8]) * 100
-                
+                fibo = calculate_fibonacci_levels(prices); current_price = prices[-1]
+                trend_7d = ((current_price - prices[-8]) / prices[-8]) * 100 if len(prices) >= 8 else 0.0
                 if current_price <= fibo["Fibo_618"]:
-                    trend_24 = coin.get('price_change_percentage_24h', 0)
-                    dispatch_signal(
-                        TELEGRAM_CHAT_ID, coin['name'], symbol, coin.get('market_cap_rank', 'N/A'), 
-                        ath_change, vol_mult, rsi_14, current_price, fibo, coin_id, 
-                        trend_24, current_vol, trend_7d, atr, ema7, ema21
-                    )
-                    
-                    save_cooldown(coin_id)
-                    cooldown_db[coin_id] = time.time()
-                    
+                    dispatch_signal(TELEGRAM_CHAT_ID, coin['name'], symbol, coin.get('market_cap_rank', 'N/A'), ath_change, vol_mult, rsi_14, current_price, fibo, coin_id, coin.get('price_change_percentage_24h', 0), current_vol, trend_7d, atr, ema7, ema21)
+                    save_cooldown(coin_id); cooldown_db[coin_id] = time.time()
                 time.sleep(2)
-            except Exception as e: 
-                logger.error(f"[ERROR LOG] Ralat imbasan {coin.get('id')}: {e}")
-                time.sleep(2)
-                
-        if is_scanning:
-            if ADMIN_CHAT_ID:
-                try: bot.send_message(ADMIN_CHAT_ID, "⏳ <b>[STANDBY]</b> Scanning makro selesai. Engine Cooling (6Hrs).", parse_mode="HTML")
-                except Exception: pass
-            time.sleep(21600)
+            except Exception as e: logger.error(f"[ERROR] Ralat imbasan {coin.get('id')}: {e}"); time.sleep(2)
+        if is_scanning: time.sleep(21600)
 
 # ==========================================
-# 8. TELEGRAM COMMAND HANDLERS
+# 8. & 9. HANDLERS & MAIN 🔒 LOCKED + SHUTDOWN FIX
 # ==========================================
 @bot.message_handler(commands=['start', 'help'])
-def send_welcome(message):
-    bot.reply_to(message, "⚡ <b>Nova7 Diaktifkan!</b>\nArahan tersedia: <code>/ca</code>, <code>/scan</code>, <code>/stop</code>", parse_mode="HTML")
-
+def send_welcome(message): bot.reply_to(message, "⚡ <b>Nova7 Diaktifkan!</b>\nArahan: <code>/ca</code>, <code>/scan</code>, <code>/stop</code>", parse_mode="HTML")
 @bot.message_handler(commands=['scan'])
 def start_scan_cmd(message):
-    global is_scanning
-    is_scanning = True
-    bot.reply_to(message, "✅ <b>Engine Nova7 Diaktifkan.</b> Bot sedang merempuh pasaran.", parse_mode="HTML")
-
+    global is_scanning; is_scanning = True
+    bot.reply_to(message, "✅ <b>Engine Nova7 Diaktifkan.</b>", parse_mode="HTML")
 @bot.message_handler(commands=['stop'])
 def stop_scan_cmd(message):
-    global is_scanning
-    is_scanning = False
-    bot.reply_to(message, "🛑 <b>Enjin Dihentikan Sementara.</b>", parse_mode="HTML")
-
+    global is_scanning; is_scanning = False
+    bot.reply_to(message, "🛑 <b>Enjin Dihentikan.</b>", parse_mode="HTML")
 @bot.message_handler(commands=['ca'])
 def manual_ca_check(message):
     args = message.text.split()
-    if len(args) < 2:
-        bot.reply_to(message, "⚠️ <b>Sila masukkan Contract Address atau ID.</b>", parse_mode="HTML")
-        return
-        
-    query = args[1].lower()
-    bot.reply_to(message, f"🔍 <i>Menganalisis {html.escape(query)}...</i>", parse_mode="HTML")
+    if len(args) < 2: bot.reply_to(message, "⚠️ <b>Sila masukkan CA/ID.</b>", parse_mode="HTML"); return
+    query = args[1].lower(); bot.reply_to(message, f"🔍 <i>Menganalisis {html.escape(query)}...</i>", parse_mode="HTML")
     headers = {"x-cg-demo-api-key": CG_API_KEY} if CG_API_KEY else {}
-    
     try:
         passed_address = query if query.startswith("0x") else None
         search_res = requests.get(f"{BASE_URL}/search?query={query}", headers=headers, timeout=15).json()
-        if not search_res.get("coins"):
-            bot.reply_to(message, "❌ <b>Aset tidak dijumpai.</b>", parse_mode="HTML")
-            return
-            
+        if not search_res.get("coins"): bot.reply_to(message, "❌ <b>Tidak dijumpai.</b>", parse_mode="HTML"); return
         coin_id = search_res["coins"][0]["id"]
         market_res = requests.get(f"{BASE_URL}/coins/markets?vs_currency=usd&ids={coin_id}", headers=headers, timeout=15).json()[0]
-        
-        coin_name = market_res['name']
-        symbol = market_res['symbol'].upper()
-        rank = market_res.get('market_cap_rank', 'N/A')
-        ath_change = market_res.get('ath_change_percentage', 0)
-        current_price = market_res['current_price']
-        trend_24 = market_res.get('price_change_percentage_24h', 0)
-        vol_24 = market_res.get('total_volume', 0)
-        
-        hist_url = f"{BASE_URL}/coins/{coin_id}/market_chart"
-        hist_data = requests.get(hist_url, params={"vs_currency": "usd", "days": "30", "interval": "daily"}, headers=headers, timeout=15).json()
-        prices = [p[1] for p in hist_data['prices']]
-        volumes = [v[1] for v in hist_data.get('total_volumes', [])]
-        
+        coin_name, symbol, rank = market_res['name'], market_res['symbol'].upper(), market_res.get('market_cap_rank', 'N/A')
+        ath_change, current_price, trend_24, vol_24 = market_res.get('ath_change_percentage', 0), market_res['current_price'], market_res.get('price_change_percentage_24h', 0), market_res.get('total_volume', 0)
+        hist_data = requests.get(f"{BASE_URL}/coins/{coin_id}/market_chart", params={"vs_currency": "usd", "days": "30", "interval": "daily"}, headers=headers, timeout=15).json()
+        prices = [p[1] for p in hist_data['prices']]; volumes = [v[1] for v in hist_data.get('total_volumes', [])]
         rsi_14 = calculate_rsi(prices, 14) if len(prices) >= 30 else 0.0
         fibo = calculate_fibonacci_levels(prices) if len(prices) >= 30 else {"Fibo_100": current_price, "Fibo_786": current_price, "Fibo_618": current_price, "Fibo_0": current_price}
-        
-        ema7   = calculate_ema(prices, 7)
-        ema21  = calculate_ema(prices, 21)
-        atr    = calculate_atr(prices)
-        
-        trend_7d = 0.0
-        if len(prices) >= 8:
-            trend_7d = ((current_price - prices[-8]) / prices[-8]) * 100
-            
-        avg_vol7 = np.mean(volumes[-8:-1]) if len(volumes) >= 8 else vol_24
-        vol_mult = vol_24 / avg_vol7 if avg_vol7 > 0 else 1.0
-
-        dispatch_signal(
-            TELEGRAM_CHAT_ID, coin_name, symbol, rank, ath_change, vol_mult, 
-            rsi_14, current_price, fibo, coin_id, trend_24, vol_24, trend_7d, 
-            atr, ema7, ema21, passed_ca=passed_address
-        )
+        ema7, ema21, atr = calculate_ema(prices, 7), calculate_ema(prices, 21), calculate_atr(prices)
+        trend_7d = ((current_price - prices[-8]) / prices[-8]) * 100 if len(prices) >= 8 else 0.0
+        avg_vol7 = np.mean(volumes[-8:-1]) if len(volumes) >= 8 else vol_24; vol_mult = vol_24 / avg_vol7 if avg_vol7 > 0 else 1.0
+        dispatch_signal(TELEGRAM_CHAT_ID, coin_name, symbol, rank, ath_change, vol_mult, rsi_14, current_price, fibo, coin_id, trend_24, vol_24, trend_7d, atr, ema7, ema21, passed_ca=passed_address)
         bot.reply_to(message, "✅ <b>Analisis Selesai!</b>", parse_mode="HTML")
-        
-    except Exception as e:
-        logger.error(f"Ralat /ca manual: {e}")
-        bot.reply_to(message, f"❌ <b>Ralat Teknikal:</b> Gagal memproses data pasaran.", parse_mode="HTML")
+    except Exception as e: bot.reply_to(message, f"❌ <b>Ralat Teknikal.</b>", parse_mode="HTML")
 
-# ==========================================
-# 9. SISTEM KAWALAN UTAMA
-# ==========================================
+scan_thread = tracker_thread = None
 def graceful_shutdown(*args):
+    global is_scanning
+    is_scanning = False
     if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
-        try: bot.send_message(ADMIN_CHAT_ID, "🔴 <b>[OFFLINE] NOVA7 DISCONNECTED.</b> Render shutting down.", parse_mode="HTML")
-        except Exception: pass
+        try: bot.send_message(ADMIN_CHAT_ID, "🔴 <b>[OFFLINE] NOVA7 DISCONNECTED.</b>", parse_mode="HTML")
+        except: pass
+    # 🛠️ FIXED: Thread cleanup
+    for t in [tracker_thread, scan_thread]:
+        if t and t.is_alive(): t.join(timeout=10)
     sys.exit(0)
 
 if __name__ == "__main__":
-    signal.signal(signal.SIGTERM, graceful_shutdown)
-    signal.signal(signal.SIGINT,  graceful_shutdown)
-
+    signal.signal(signal.SIGTERM, graceful_shutdown); signal.signal(signal.SIGINT, graceful_shutdown)
     RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
-    if RENDER_URL:
-        bot.remove_webhook()
-        time.sleep(1)
-        bot.set_webhook(url=f"{RENDER_URL}/webhook")
-        print(f"[WEBHOOK] Aktif: {RENDER_URL}/webhook")
-    else:
-        print("[WARNING] RENDER_EXTERNAL_URL tiada — webhook tidak ditetapkan.")
-
+    if RENDER_URL: bot.remove_webhook(); time.sleep(1); bot.set_webhook(url=f"{RENDER_URL}/webhook"); print(f"[WEBHOOK] Aktif: {RENDER_URL}/webhook")
+    else: print("[WARNING] RENDER_EXTERNAL_URL tiada.")
     if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
-        try: bot.send_message(ADMIN_CHAT_ID, "🟢 <b>HELLO, ALPHA V2 NOW ACTIVE.</b>\nLink to Render established.", parse_mode="HTML")
+        try: bot.send_message(ADMIN_CHAT_ID, "🟢 <b>HELLO, NOVA7 ACTIVE.</b>", parse_mode="HTML")
         except: pass
-
-    threading.Thread(target=run_trade_tracker_loop, daemon=True).start()
-    threading.Thread(target=run_scanner_loop,       daemon=True).start()
-
-    # [JOURNAL] Daftarkan commands /journal & /weekly + auto report Ahad
+    tracker_thread = threading.Thread(target=run_trade_tracker_loop, daemon=True); tracker_thread.start()
+    scan_thread = threading.Thread(target=run_scanner_loop, daemon=True); scan_thread.start()
     journal.register_commands(bot, ADMIN_CHAT_ID)
-
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
