@@ -228,15 +228,19 @@ def get_category_insight(categories):
 # ==========================================
 def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
     markup = InlineKeyboardMarkup(row_width=2)
-    data = get_cached_coin_data(coin_id)
+    headers = {"x-cg-demo-api-key": CG_API_KEY} if CG_API_KEY else {}
 
+    url = f"{BASE_URL}/coins/{coin_id}?localization=false&tickers=true&market_data=false&community_data=false&developer_data=false"
     categories = []
     chain_name = "Native Chain"
     asset_platform_id = ""
     final_ca = contract_address
 
-    if data:
+    try:
+        res = requests.get(url, headers=headers, timeout=15)
+        data = res.json()
         categories = data.get("categories", [])
+
         asset_platform_id = data.get("asset_platform_id", "")
         if asset_platform_id:
             chain_name = asset_platform_id.replace("-", " ").title()
@@ -246,24 +250,43 @@ def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
             if platforms:
                 final_ca = list(platforms.values())[0]
 
-    # BARIS 1: Cashtag Live + DexScreener
-    cashtag_url = f"https://twitter.com/search?q=%24{symbol}&f=live"
-    dex_url = f"https://dexscreener.com/search?q={final_ca}" if final_ca else f"https://dexscreener.com/search?q={symbol}"
-    markup.row(
-        InlineKeyboardButton("🐦 Cashtag Live", url=cashtag_url),
-        InlineKeyboardButton("📊 DexScreener", url=dex_url)
-    )
+        # =========================================================
+        # BARIS 1: Cashtag Live (X/Twitter) + DexScreener (TERUS KE TOKEN)
+        # =========================================================
+        cashtag_url = f"https://x.com/search?q=%24{symbol}&f=live"
 
-    # BARIS 2: DEX Sniper (BonkBot untuk Solana, Maestro untuk EVM)
-    if final_ca:
-        platform_id_lower = asset_platform_id.lower() if asset_platform_id else ""
-        if "solana" in platform_id_lower:
-            markup.row(InlineKeyboardButton("🤖 Trade on BonkBot", url=f"https://t.me/bonkbot_bot?start=ref_sniper_{final_ca}"))
+        # DEXSCREENER: TERUS KE HALAMAN TOKEN (bukan search)
+        if final_ca:
+            dex_url = f"https://dexscreener.com/{final_ca}"
         else:
-            markup.row(InlineKeyboardButton("🦅 Trade on Maestro", url=f"https://t.me/MaestroSniperBot?start={final_ca}-sniper"))
+            dex_url = f"https://dexscreener.com/search?q={symbol}"
 
-    # BARIS 3: CEX (Binance / Bitget / Gate.io)
-    if data:
+        markup.row(
+            InlineKeyboardButton("🐦 Cashtag Live", url=cashtag_url),
+            InlineKeyboardButton("📊 DexScreener", url=dex_url)
+        )
+
+        # =========================================================
+        # BARIS 2: TradingView Chart (TERUS KE CHART PAIR)
+        # =========================================================
+        tradingview_url = f"https://www.tradingview.com/chart/?symbol=BINANCE%3A{symbol.upper()}USDT&utm_source=telegram"
+        markup.row(InlineKeyboardButton("📈 TradingView Chart", url=tradingview_url))
+
+        # =========================================================
+        # BARIS 3: DEX Sniper (TERUS KE BOT DENGAN ADDRESS)
+        # =========================================================
+        if final_ca:
+            platform_id_lower = asset_platform_id.lower() if asset_platform_id else ""
+            if "solana" in platform_id_lower:
+                # BonkBot untuk Solana
+                markup.row(InlineKeyboardButton("🤖 Trade on BonkBot", url=f"https://t.me/bonkbot_bot?start=ref_sniper_{final_ca}"))
+            else:
+                # Maestro untuk EVM (Ethereum, BSC, Polygon, dll)
+                markup.row(InlineKeyboardButton("🦅 Trade on Maestro", url=f"https://t.me/MaestroSniperBot?start={final_ca}-sniper"))
+
+        # =========================================================
+        # BARIS 4: CEX (TERUS KE PAIR TRADING)
+        # =========================================================
         tickers = data.get("tickers", [])
         has_binance = has_bitget = has_gate = False
 
@@ -279,12 +302,22 @@ def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
                 elif "gate" in market_name:
                     has_gate = True
 
+        # Binance - TERUS KE PAIR
         if has_binance:
-            markup.row(InlineKeyboardButton("🟨 Trade on Binance", url=f"https://www.binance.com/en/trade/{symbol.upper()}_USDT"))
+            binance_url = f"https://www.binance.com/en/trade/{symbol.upper()}_USDT"
+            markup.row(InlineKeyboardButton("🟨 Trade on Binance", url=binance_url))
+        # Bitget - TERUS KE PAIR
         elif has_bitget:
-            markup.row(InlineKeyboardButton("🟦 Trade on Bitget", url=f"https://www.bitget.com/spot/{symbol.upper()}USDT"))
+            bitget_url = f"https://www.bitget.com/spot/{symbol.upper()}USDT"
+            markup.row(InlineKeyboardButton("🟦 Trade on Bitget", url=bitget_url))
+        # Gate.io - TERUS KE PAIR
         elif has_gate:
-            markup.row(InlineKeyboardButton("🟥 Trade on Gate.io", url=f"https://www.gate.io/trade/{symbol.upper()}_USDT"))
+            gate_url = f"https://www.gate.io/trade/{symbol.upper()}_USDT"
+            markup.row(InlineKeyboardButton("🟥 Trade on Gate.io", url=gate_url))
+
+    except Exception as e:
+        admin_log(f"Ralat Keyboard / UI ({symbol})", e)
+        logger.error(f"Ralat keyboard: {e}")
 
     return markup, categories, final_ca, chain_name
 
