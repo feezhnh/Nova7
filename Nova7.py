@@ -131,12 +131,27 @@ class IncrementalIndicators:
 
 class BreakoutHunter:
     def check(self, ind):
-        if len(ind.closes) < 51: return None
-        close, rvol, recent_high = ind.closes[-1], ind.get_rvol(), ind.get_recent_high()
-        if (close > recent_high and close > ind.ema21 and ind.ema21 > ind.ema50 
-            and rvol >= 1.8 and 50 < ind.rsi < 75):
-            return {'type': 'BREAKOUT', 'rvol': rvol, 'break_level': recent_high, 'low': min(ind.lows[-5:])}
-        return None
+        if len(ind.closes) < 51: 
+            return None, {"Data Sejarah": "Kurang 51 candle (Gagal)"}
+        
+        close = ind.closes[-1]
+        rvol = ind.get_rvol()
+        recent_high = ind.get_recent_high()
+        
+        # Enjin Self-Documenting: Semua syarat & nilai atual direkodkan secara dinamik
+        conditions = {
+            f"Pecah High 20-Candle ({recent_high:.6f})": close > recent_high,
+            f"Harga Atas EMA21 ({ind.ema21:.6f})": close > ind.ema21,
+            "Struktur Uptrend (EMA21 > EMA50)": ind.ema21 > ind.ema50,
+            f"Volume Spike (RVOL >= 1.8x) [Aktual: {rvol:.2f}x]": rvol >= 1.8,
+            f"Momentum RSI (50 - 75) [Aktual: {ind.rsi:.1f}]": 50 < ind.rsi < 75
+        }
+        
+        # Jika SEMUA syarat True, ia VALID
+        if all(conditions.values()):
+            sig = {'type': 'BREAKOUT', 'rvol': rvol, 'break_level': recent_high, 'low': min(ind.lows[-5:])}
+            return sig, conditions
+        return None, conditions
 
 class AccumulationDetective:
     def check(self, ind):
@@ -275,7 +290,10 @@ async def layer2_sniper(symbol, scan_type, force=False):
         ind = IncrementalIndicators()
         if not ind.initialize(closes, highs, lows, volumes): return
         
-        sig = BreakoutHunter().check(ind) if scan_type == 'BREAKOUT' else AccumulationDetective().check(ind)
+                if scan_type == 'BREAKOUT':
+            sig, _ = BreakoutHunter().check(ind)
+        else:
+            sig = AccumulationDetective().check(ind)
         if sig:
             dispatch_signal(symbol, closes[-1], sig, ind, scan_type)
             stats['signals_sent'] += 1
@@ -342,19 +360,7 @@ def cmd_status(msg):
     )
     bot.reply_to(msg, text, parse_mode="HTML")
 
-@bot.message_handler(commands=['force'])
-def cmd_force(msg):
-    """Command baru: /force FETUSDT - Paksa Layer 2 scan serta merta"""
-    args = msg.text.split()
-    if len(args) < 2:
-        bot.reply_to(msg, "⚠️ <b>Format:</b> <code>/force FETUSDT</code>", parse_mode="HTML")
-        return
-    sym = args[1].upper()
-    if not sym.endswith('USDT'): sym += 'USDT'
-    bot.reply_to(msg, f"🎯 <b>Sniper Deployed:</b> Menganalisis {sym}...", parse_mode="HTML")
-    
-    # FIX: Cipta event loop baru khusus untuk thread command ini
-    threading.Thread(target=lambda: asyncio.run(layer2_sniper(sym, 'BREAKOUT', force=True)), daemon=True).start()
+def cmd_force
 # ==========================================
 # FLASK WEBHOOK & SHUTDOWN
 # ==========================================
