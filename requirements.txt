@@ -3,3 +3,6 @@ pyTelegramBotAPI
 Flask
 requests
 aiohttp
+mplfinance
+matplotlib
+pandas
