@@ -473,6 +473,49 @@ async def layer1_radar():
             logger.error(f"❌ [RADAR] Disconnected: {e}. Reconnecting...")
             await asyncio.sleep(5)
 
+# ==========================================
+# PREMIUM FEATURE 1: AUTO-CHART (VISUAL PROOF)
+# ==========================================
+def generate_chart_image(symbol, closes, highs, lows, volumes, ema21, ema50, sl, tp1, tp2, tp3):
+    try:
+        n = min(60, len(closes))
+        # FIX BUG PANDAS 2.2: Tukar 'H' kepada '1h'
+        df = pd.DataFrame({
+            'Open': [closes[i-1] if i > 0 else closes[i] for i in range(len(closes)-n, len(closes))],
+            'High': highs[-n:],
+            'Low': lows[-n:],
+            'Close': closes[-n:],
+            'Volume': volumes[-n:]
+        }, index=pd.date_range(end=datetime.now(), periods=n, freq='1h'))
+
+        addplots = []
+        if ema21: addplots.append(mpf.make_addplot([ema21]*n, color='#00BFFF', width=1.2))
+        if ema50: addplots.append(mpf.make_addplot([ema50]*n, color='#FFA500', width=1.2))
+
+        hlines = dict(hlines=[sl, tp1, tp2, tp3],
+                      colors=['red', 'lime', 'lime', 'gold'],
+                      linestyle=['-', '--', '--', '--'],
+                      linewidths=[1.2, 1, 1, 1])
+
+        mc = mpf.make_marketcolors(up='#26A69A', down='#EF5350', edge='inherit', wick='inherit', volume='in')
+        style = mpf.make_mpf_style(marketcolors=mc, gridstyle='-', gridcolor='#1E1E1E',
+                                    facecolor='#0E0E0E', edgecolor='#0E0E0E', figcolor='#0E0E0E',
+                                    rc={'axes.labelcolor': 'white', 'xtick.color': 'white', 'ytick.color': 'white'})
+
+        buf = io.BytesIO()
+        fig, axes = mpf.plot(df, type='candle', style=style, addplot=addplots, hlines=hlines,
+                              volume=True, figsize=(10, 6), title=f"\n{symbol} | Nova7 Signal", returnfig=True)
+        fig.savefig(buf, format='png', dpi=100, bbox_inches='tight', facecolor='#0E0E0E')
+        plt.close(fig)
+        buf.seek(0)
+        return buf
+    except Exception as e:
+        logger.error(f"Chart generation error: {e}")
+        return None
+
+# ==========================================
+# LAYER 2 SNIPER (DENGAN AUTO-CHART FORCE)
+# ==========================================
 async def layer2_sniper(symbol, scan_type, force=False, chat_id=None, user_cap=1000.0, user_risk=2.0):
     try:
         t = get_tuning()
@@ -494,8 +537,25 @@ async def layer2_sniper(symbol, scan_type, force=False, chat_id=None, user_cap=1
         else:
             sig, conditions = AccumulationDetective().check(ind, t)
 
+        # Kira SL/TP (Atau Dummy jika signal invalid untuk tujuan visualisasi carta)
         if sig:
-            # Daily filter
+            sl = sig['low'] * 0.995
+            risk = closes[-1] - sl
+            tp1 = closes[-1] + (risk * 2.0)
+            tp2 = closes[-1] + (risk * 3.5)
+            tp3 = closes[-1] + (risk * 5.5)
+        else:
+            sl = closes[-1] * 0.95
+            tp1 = closes[-1] * 1.05
+            tp2 = closes[-1] * 1.10
+            tp3 = closes[-1] * 1.15
+
+        # WAJIB JANA CARTA JIKA VALID ATAU DI-FORCE
+        chart_buf = None
+        if sig or force:
+            chart_buf = generate_chart_image(symbol, closes, highs, lows, volumes, ind.ema21, ind.ema50, sl, tp1, tp2, tp3)
+
+        if sig:
             daily_filter_on = t.get('bo_daily_filter', 1) == 1
             daily_ok, daily_note = True, "Filter OFF"
             if daily_filter_on:
@@ -509,15 +569,9 @@ async def layer2_sniper(symbol, scan_type, force=False, chat_id=None, user_cap=1
                 return
 
             log_activity(f"{symbol} ✅ VALID ({scan_type}) → Dispatching")
-            chart_buf = generate_chart_image(symbol, closes, highs, lows, volumes, ind.ema21, ind.ema50, sig,
-                                              sig['low'] * 0.995,
-                                              closes[-1] + ((closes[-1] - sig['low'] * 0.995) * 2.0),
-                                              closes[-1] + ((closes[-1] - sig['low'] * 0.995) * 3.5),
-                                              closes[-1] + ((closes[-1] - sig['low'] * 0.995) * 5.5))
             dispatch_signal(symbol, closes[-1], sig, ind, scan_type, chart_buf, daily_note, user_cap, user_risk)
             stats['signals_sent'] += 1
         else:
-            # Log kenapa gagal (ringkas)
             failed = [k for k, v in conditions.items() if not v]
             if failed:
                 main_reason = failed[0].split('[')[0].strip()[:40]
@@ -528,7 +582,12 @@ async def layer2_sniper(symbol, scan_type, force=False, chat_id=None, user_cap=1
                 report = f"🔍 <b>Diagnostic {symbol}</b>\n❌ Setup TIDAK VALID.\n\n"
                 for condition, passed in conditions.items():
                     report += f"{'✅' if passed else '❌'} {condition}\n"
-                bot.send_message(chat_id, report, parse_mode="HTML")
+                
+                # HANTAR CARTA + TEKS DIAGNOSTIK JIKA DI-FORCE
+                if chart_buf and force:
+                    bot.send_photo(chat_id, chart_buf, caption=report, parse_mode="HTML")
+                else:
+                    bot.send_message(chat_id, report, parse_mode="HTML")
 
         stats['layer2_scans'] += 1
     except Exception as e:
