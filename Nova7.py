@@ -441,7 +441,7 @@ def dispatch_signal(chat_id, coin_name, symbol, rank, ath_change, vol_multiplier
 # =========================================================
 def run_trade_tracker_loop():
     while True:
-        time.sleep(30)  # 30 saat untuk scalping
+        time.sleep(30)
 
         if not TELEGRAM_CHAT_ID or not os.path.exists("active_trades.json"):
             continue
@@ -458,7 +458,6 @@ def run_trade_tracker_loop():
         if not active_items:
             continue
 
-        # ─── BUILD COIN LIST UNTUK PRICEFEED ──────────────────
         unique_coins = {}
         for msg_id, trade in active_items.items():
             coin_id = trade["coin_id"]
@@ -466,12 +465,11 @@ def run_trade_tracker_loop():
                 unique_coins[coin_id] = {
                     'coin_id': coin_id,
                     'symbol': trade["symbol"],
-                    'contract': trade.get("contract")   # mungkin None
+                    'contract': trade.get("contract")
                 }
 
         coin_list = list(unique_coins.values())
 
-        # ─── FETCH PRICES (AUTO-ROUTE) ─────────────────────────
         try:
             current_prices = price_feed.get_prices(coin_list)
         except Exception as e:
@@ -487,7 +485,6 @@ def run_trade_tracker_loop():
         for msg_id, trade in active_items.items():
             c_id = trade["coin_id"]
             if c_id not in current_prices:
-                logger.debug(f"[TRACKER] {trade['symbol']} - harga tak tersedia")
                 continue
 
             price_now = current_prices[c_id]
@@ -522,6 +519,19 @@ def run_trade_tracker_loop():
                         "COMPLETED": "TP3_HIT",
                         "STOP_LOSS": "STOP_LOSS"
                     }
+                    # ✅ Betul: satu baris tanpa kurungan terpisah
+                    journal.update_outcome(coin_id=trade["coin_id"], outcome=outcome_map.get(new_status, new_status), exit_price=price_now)
+
+                except Exception as e:
+                    logger.error(f"Gagal hantar reply tracker: {e}")
+
+        if updated:
+            with trades_lock:
+                try:
+                    with open("active_trades.json", "w") as f:
+                        json.dump(trades, f, indent=4)
+                except Exception as e:
+                    logger.error(f"Gagal simpan update tracker: {e}")
                     journal.update_outcome(
                         coin_id=trade["coin_id"],
                         outcome=outcome_map.get(new_status, new_status),
