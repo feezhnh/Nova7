@@ -383,8 +383,6 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, graceful_shutdown)
     init_db()
     
-    if bot:
-        threading.Thread(target=lambda: bot.infinity_polling(), daemon=True).start()
     threading.Thread(target=lambda: asyncio.run(trade_tracker()), daemon=True).start()
     
     RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
