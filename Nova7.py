@@ -47,10 +47,29 @@ HEAVYWEIGHTS = {
 }
 
 # ==========================================
-# DATABASE SQLITE
+# DATABASE SQLITE + TUNING PARAMS
 # ==========================================
 DB_NAME = "nova7_data.db"
 db_lock = threading.Lock()
+
+DEFAULT_TUNING = {
+    'mode': 'standard',
+    # Breakout params
+    'bo_rvol': 1.8,
+    'bo_rsi_min': 50,
+    'bo_rsi_max': 75,
+    'bo_daily_filter': 1,  # 1=on, 0=off
+    # Accumulation params
+    'acc_bb_width': 6.0,
+    'acc_rvol': 2.0,
+    'acc_rsi_max': 45,
+    # Radar params
+    'radar_momentum': 2.5,
+    'radar_min_vol': 15_000_000,
+    # Cooldown
+    'cd_breakout': 24,
+    'cd_accumulation': 48
+}
 
 def init_db():
     with db_lock, sqlite3.connect(DB_NAME) as conn:
@@ -62,7 +81,25 @@ def init_db():
                         (symbol TEXT PRIMARY KEY, last_signal REAL)''')
         conn.execute('''CREATE TABLE IF NOT EXISTS user_profiles
                         (user_id INTEGER PRIMARY KEY, capital REAL, risk_pct REAL, updated REAL)''')
+        conn.execute('''CREATE TABLE IF NOT EXISTS tuning_params
+                        (key TEXT PRIMARY KEY, value REAL)''')
+        # Init default tuning jika belum ada
+        for k, v in DEFAULT_TUNING.items():
+            conn.execute("INSERT OR IGNORE INTO tuning_params VALUES (?, ?)", (k, float(v) if not isinstance(v, str) else 0))
     logger.info("✅ [DB] Nova7 SQLite initialized.")
+
+def get_tuning():
+    with db_lock, sqlite3.connect(DB_NAME) as conn:
+        rows = conn.execute("SELECT key, value FROM tuning_params").fetchall()
+        t = {r[0]: r[1] for r in rows}
+        t['mode'] = t.get('mode', 0)
+        return t
+
+def set_tuning(params):
+    with db_lock, sqlite3.connect(DB_NAME) as conn:
+        for k, v in params.items():
+            val = float(v) if not isinstance(v, str) else 0
+            conn.execute("INSERT OR REPLACE INTO tuning_params VALUES (?, ?)", (k, val))
 
 def save_trade(msg_id, symbol, entry, sl, tp1, tp2, tp3, engine):
     with db_lock, sqlite3.connect(DB_NAME) as conn:
@@ -149,19 +186,22 @@ class IncrementalIndicators:
         return max(self.highs[-21:-1]) if len(self.highs) >= 21 else 0
 
 # ==========================================
-# ENGINES
+# ENGINES (DYNAMIC TUNING)
 # ==========================================
 class BreakoutHunter:
-    def check(self, ind):
+    def check(self, ind, t):
         if len(ind.closes) < 51:
             return None, {"Data Sejarah": "Kurang 51 candle (Gagal)"}
         close, rvol, recent_high = ind.closes[-1], ind.get_rvol(), ind.get_recent_high()
+        rsi_min = t.get('bo_rsi_min', 50)
+        rsi_max = t.get('bo_rsi_max', 75)
+        rvol_min = t.get('bo_rvol', 1.8)
         conditions = {
             f"Pecah High 20-C ({recent_high:.6f})": close > recent_high,
             f"Atas EMA21 ({ind.ema21:.6f})": close > ind.ema21,
             "Uptrend (EMA21>EMA50)": ind.ema21 > ind.ema50,
-            f"RVOL >= 1.8x [{rvol:.2f}x]": rvol >= 1.8,
-            f"RSI 50-75 [{ind.rsi:.1f}]": 50 < ind.rsi < 75
+            f"RVOL >= {rvol_min}x [{rvol:.2f}x]": rvol >= rvol_min,
+            f"RSI {rsi_min}-{rsi_max} [{ind.rsi:.1f}]": rsi_min < ind.rsi < rsi_max
         }
         if all(conditions.values()):
             sig = {'type': 'BREAKOUT', 'rvol': rvol, 'break_level': recent_high, 'low': min(ind.lows[-5:])}
@@ -169,15 +209,25 @@ class BreakoutHunter:
         return None, conditions
 
 class AccumulationDetective:
-    def check(self, ind):
-        if len(ind.closes) < 51: return None
+    def check(self, ind, t):
+        if len(ind.closes) < 51: return None, {}
         close, bb, rvol = ind.closes[-1], ind.get_bb_width(), ind.get_rvol()
-        if bb < 6.0 and rvol >= 2.0 and close < ind.ema50 and ind.rsi < 45:
-            return {'type': 'ACCUMULATION', 'rvol': rvol, 'bb': bb, 'low': min(ind.lows[-5:])}
-        return None
+        bb_max = t.get('acc_bb_width', 6.0)
+        rvol_min = t.get('acc_rvol', 2.0)
+        rsi_max = t.get('acc_rsi_max', 45)
+        conditions = {
+            f"BB Width < {bb_max}% [{bb:.2f}%]": bb < bb_max,
+            f"RVOL >= {rvol_min}x [{rvol:.2f}x]": rvol >= rvol_min,
+            "Bawah EMA50 (Accum Zone)": close < ind.ema50,
+            f"RSI < {rsi_max} [{ind.rsi:.1f}]": ind.rsi < rsi_max
+        }
+        if all(conditions.values()):
+            sig = {'type': 'ACCUMULATION', 'rvol': rvol, 'bb': bb, 'low': min(ind.lows[-5:])}
+            return sig, conditions
+        return None, conditions
 
 # ==========================================
-# PREMIUM FEATURE 1: AUTO-CHART (VISUAL PROOF)
+# AUTO-CHART (VISUAL PROOF)
 # ==========================================
 def generate_chart_image(symbol, closes, highs, lows, volumes, ema21, ema50, sig, sl, tp1, tp2, tp3):
     try:
@@ -190,43 +240,33 @@ def generate_chart_image(symbol, closes, highs, lows, volumes, ema21, ema50, sig
             'Volume': volumes[-n:]
         }, index=pd.date_range(end=datetime.now(), periods=n, freq='H'))
 
-        ema21_arr = [ema21] * n if ema21 else None
-        ema50_arr = [ema50] * n if ema50 else None
-
         addplots = []
-        if ema21_arr:
-            addplots.append(mpf.make_addplot(ema21_arr, color='#00BFFF', width=1.2, label='EMA21'))
-        if ema50_arr:
-            addplots.append(mpf.make_addplot(ema50_arr, color='#FFA500', width=1.2, label='EMA50'))
+        if ema21: addplots.append(mpf.make_addplot([ema21]*n, color='#00BFFF', width=1.2))
+        if ema50: addplots.append(mpf.make_addplot([ema50]*n, color='#FFA500', width=1.2))
 
         hlines = dict(hlines=[sl, tp1, tp2, tp3],
                       colors=['red', 'lime', 'lime', 'gold'],
                       linestyle=['-', '--', '--', '--'],
                       linewidths=[1.2, 1, 1, 1])
 
-        mc = mpf.make_marketcolors(up='#26A69A', down='#EF5350',
-                                    edge='inherit', wick='inherit', volume='in')
+        mc = mpf.make_marketcolors(up='#26A69A', down='#EF5350', edge='inherit', wick='inherit', volume='in')
         style = mpf.make_mpf_style(marketcolors=mc, gridstyle='-', gridcolor='#1E1E1E',
-                                    facecolor='#0E0E0E', edgecolor='#0E0E0E',
-                                    figcolor='#0E0E0E', rc={'axes.labelcolor': 'white',
-                                                             'xtick.color': 'white',
-                                                             'ytick.color': 'white'})
+                                    facecolor='#0E0E0E', edgecolor='#0E0E0E', figcolor='#0E0E0E',
+                                    rc={'axes.labelcolor': 'white', 'xtick.color': 'white', 'ytick.color': 'white'})
 
         buf = io.BytesIO()
-        fig, axes = mpf.plot(df, type='candle', style=style, addplot=addplots,
-                              hlines=hlines, volume=True, figsize=(10, 6),
-                              title=f"\n{symbol} | Nova7 Institutional Signal",
-                              returnfig=True)
+        fig, axes = mpf.plot(df, type='candle', style=style, addplot=addplots, hlines=hlines,
+                              volume=True, figsize=(10, 6), title=f"\n{symbol} | Nova7 Signal", returnfig=True)
         fig.savefig(buf, format='png', dpi=100, bbox_inches='tight', facecolor='#0E0E0E')
         plt.close(fig)
         buf.seek(0)
         return buf
     except Exception as e:
-        logger.error(f"Chart generation error: {e}")
+        logger.error(f"Chart error: {e}")
         return None
 
 # ==========================================
-# PREMIUM FEATURE 2: MULTI-TIMEFRAME (TRAP KILLER)
+# DAILY CONFLUENCE (TRAP KILLER)
 # ==========================================
 def check_daily_confluence(symbol, current_price):
     try:
@@ -237,18 +277,16 @@ def check_daily_confluence(symbol, current_price):
         lows = [float(d[3]) for d in res]
         ema50_d = sum(closes[-50:]) / 50
         low_20d = min(lows[-20:])
-        above_ema = current_price > ema50_d
-        bouncing = current_price < low_20d * 1.03
-        if above_ema:
+        if current_price > ema50_d:
             return True, f"Above Daily EMA50 ({ema50_d:.6f})"
-        if bouncing:
+        if current_price < low_20d * 1.03:
             return True, f"Bouncing from 20D Support ({low_20d:.6f})"
         return False, f"Below Daily EMA50 ({ema50_d:.6f}) & No Support"
     except Exception as e:
         return False, f"Error: {str(e)[:50]}"
 
 # ==========================================
-# PREMIUM FEATURE 3: POSITION SIZING (FUND MANAGER)
+# POSITION SIZING (FUND MANAGER)
 # ==========================================
 def calculate_position_size(capital, risk_pct, entry, sl):
     risk_usd = capital * (risk_pct / 100.0)
@@ -280,12 +318,16 @@ def dispatch_signal(symbol, price, sig, ind, engine_type, chart_buf, daily_note,
     tp1, tp2, tp3 = price + (risk * 2.0), price + (risk * 3.5), price + (risk * 5.5)
 
     pos_usd, pos_coins, risk_usd = calculate_position_size(user_cap, user_risk, price, sl)
+    t = get_tuning()
+    mode_name = 'STANDARD'
+    if t.get('mode', 0) == 1: mode_name = 'LONGGAR'
+    elif t.get('mode', 0) == 2: mode_name = 'KETAT'
 
     emoji, title = ("🚀", "BREAKOUT RADAR") if engine_type == 'BREAKOUT' else ("🕵️", "ACCUMULATION SNIPER")
     desc = f"Break: <code>${sig.get('break_level', 0):.6f}</code>" if engine_type == 'BREAKOUT' else f"BB Squeeze: {sig.get('bb', 0):.2f}%"
 
     msg = (
-        f"{emoji} <b>{title}: {symbol}</b>\n"
+        f"{emoji} <b>{title}: {symbol}</b> <i>[{mode_name}]</i>\n"
         f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
         f"💵 <b>Price:</b> <code>${price:.6f}</code>\n"
         f"{desc}\n"
@@ -298,22 +340,20 @@ def dispatch_signal(symbol, price, sig, ind, engine_type, chart_buf, daily_note,
         f"🎯 <b>TP2 (3.5R):</b> <code>${tp2:.6f}</code>\n"
         f"🎯 <b>TP3 (5.5R):</b> <code>${tp3:.6f}</code>\n"
         f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
-        f"💼 <b>FUND MANAGER (${user_cap:,.0f} modal):</b>\n"
+        f"💼 <b>FUND MANAGER (${user_cap:,.0f}):</b>\n"
         f"   • <b>Buy:</b> {pos_coins:.4f} {symbol[:-4]} (<code>${pos_usd:,.2f}</code>)\n"
-        f"   • <b>Max Loss:</b> <code>-${risk_usd:,.2f}</code> ({user_risk}% risk)\n"
+        f"   • <b>Max Loss:</b> <code>-${risk_usd:,.2f}</code> ({user_risk}%)\n"
         f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
-        f"🐋 <i>Nova7 Institutional Setup (Asymmetric 5x-20x)</i>"
+        f"🐋 <i>Nova7 Institutional Setup</i>"
     )
 
     try:
         if chart_buf:
-            sent = bot.send_photo(TELEGRAM_CHAT_ID, chart_buf, caption=msg, parse_mode="HTML",
-                                   reply_markup=build_keyboard(symbol))
+            sent = bot.send_photo(TELEGRAM_CHAT_ID, chart_buf, caption=msg, parse_mode="HTML", reply_markup=build_keyboard(symbol))
         else:
-            sent = bot.send_message(TELEGRAM_CHAT_ID, msg, parse_mode="HTML",
-                                     reply_markup=build_keyboard(symbol), disable_web_page_preview=True)
+            sent = bot.send_message(TELEGRAM_CHAT_ID, msg, parse_mode="HTML", reply_markup=build_keyboard(symbol), disable_web_page_preview=True)
         save_trade(sent.message_id, symbol, price, sl, tp1, tp2, tp3, engine_type)
-        save_cooldown(symbol, 24 if engine_type == 'BREAKOUT' else 48)
+        save_cooldown(symbol, t.get('cd_breakout', 24) if engine_type == 'BREAKOUT' else t.get('cd_accumulation', 48))
         logger.info(f"✅ [SIGNAL] {symbol} ({engine_type}) dispatched.")
     except Exception as e:
         logger.error(f"Dispatch error: {e}")
@@ -337,27 +377,37 @@ def spot_post_mortem(symbol):
         ema21 = sum(closes[-21:]) / 21 if len(closes) >= 21 else closes[-1]
         below_ema = closes[-1] < ema21
         reasons = []
-        if rvol_now < 1.0: reasons.append(f"🩸 <b>Volume Trap:</b> RVOL {rvol_now:.2f}x. Tiada susulan institusi.")
-        if btc_change < -1.5: reasons.append(f"📉 <b>Macro Drag:</b> BTC jatuh {btc_change:.2f}%.")
-        if below_ema: reasons.append("📉 <b>Structure Break:</b> Harga gagal tahan EMA21.")
-        if not reasons: reasons.append("🎲 <b>Market Noise:</b> Setup valid, volatility rawak (Whipsaw).")
+        if rvol_now < 1.0: reasons.append(f"🩸 <b>Volume Trap:</b> RVOL {rvol_now:.2f}x")
+        if btc_change < -1.5: reasons.append(f"📉 <b>Macro Drag:</b> BTC {btc_change:.2f}%")
+        if below_ema: reasons.append("📉 <b>Structure Break:</b> Gagal tahan EMA21")
+        if not reasons: reasons.append("🎲 <b>Market Noise:</b> Whipsaw rawak")
         return "\n".join(reasons)
     except Exception:
-        return "⚠️ Data tidak mencukupi untuk bedah siasat."
+        return "⚠️ Data tidak mencukupi"
 
 # ==========================================
-# LAYER 1 & 2 ORCHESTRATOR
+# LAYER 1 & 2 ORCHESTRATOR (WITH ACTIVITY PULSE)
 # ==========================================
 latest_prices = {}
 radar_history = {}
 layer2_queue = set()
-stats = {'radar_coins': 0, 'layer2_scans': 0, 'signals_sent': 0}
+stats = {'radar_coins': 0, 'layer2_scans': 0, 'signals_sent': 0, 'rejected': 0}
+activity_log = []  # For pulse display
+
+def log_activity(msg):
+    """Simpan activity log untuk dipaparkan dalam pulse."""
+    activity_log.append(msg)
+    if len(activity_log) > 20: activity_log.pop(0)
+    logger.info(f"🎯 [SNIPER] {msg}")
 
 async def layer1_radar():
     global is_scanning
     url = "wss://stream.binance.com:9443/ws/!miniTicker@arr"
     last_snapshot = 0
     last_scheduled = 0
+    last_pulse = 0
+    pulse_stats = {'promoted': 0, 'seen': 0}
+    
     while True:
         if not is_scanning:
             await asyncio.sleep(5)
@@ -371,26 +421,45 @@ async def layer1_radar():
                     if not is_scanning: break
                     msg = await ws.recv()
                     now = time.time()
+                    
+                    # ACTIVITY PULSE setiap 5 minit
+                    if now - last_pulse >= 300:
+                        logger.info(f"💓 [PULSE] Radar: {pulse_stats['seen']} coins | Promoted: {pulse_stats['promoted']} | Signals: {stats['signals_sent']} | Rejected: {stats['rejected']}")
+                        if activity_log:
+                            logger.info(f"📋 [RECENT] {' | '.join(activity_log[-5:])}")
+                        last_pulse = now
+                        pulse_stats = {'promoted': 0, 'seen': 0}
+                    
                     if now - last_snapshot < 3.0: continue
                     last_snapshot = now
                     tickers = json.loads(msg)
-                    for t in tickers:
-                        sym = t['s']
+                    t = get_tuning()
+                    
+                    for tk in tickers:
+                        sym = tk['s']
                         if not sym.endswith('USDT') or sym in HEAVYWEIGHTS: continue
                         base = sym[:-4]
                         if base in KILL_LIST: continue
-                        c, q = float(t['c']), float(t['q'])
+                        c, q = float(tk['c']), float(tk['q'])
                         latest_prices[sym] = {'c': c, 'q': q}
+                        pulse_stats['seen'] += 1
+                        
                         if sym not in radar_history: radar_history[sym] = []
                         radar_history[sym].append({'t': now, 'c': c})
                         if len(radar_history[sym]) > 15: radar_history[sym].pop(0)
+                        
                         if len(radar_history[sym]) >= 6 and sym not in layer2_queue:
                             past_c = radar_history[sym][-6]['c']
                             if past_c > 0:
                                 change = ((c - past_c) / past_c) * 100
-                                if change >= 2.5 and q > 15_000_000:
+                                momentum = t.get('radar_momentum', 2.5)
+                                min_vol = t.get('radar_min_vol', 15_000_000)
+                                if change >= momentum and q > min_vol:
                                     layer2_queue.add(sym)
+                                    pulse_stats['promoted'] += 1
+                                    log_activity(f"{sym} ↑{change:.1f}% → Layer 2")
                                     asyncio.create_task(layer2_sniper(sym, 'BREAKOUT'))
+                    
                     if now - last_scheduled >= 7200:
                         last_scheduled = now
                         sorted_syms = sorted(latest_prices.keys(), key=lambda s: latest_prices[s]['q'], reverse=True)
@@ -398,6 +467,7 @@ async def layer1_radar():
                             if s not in layer2_queue and not check_cooldown(s):
                                 layer2_queue.add(s)
                                 asyncio.create_task(layer2_sniper(s, 'ACCUMULATION'))
+                    
                     stats['radar_coins'] = len(latest_prices)
         except Exception as e:
             logger.error(f"❌ [RADAR] Disconnected: {e}. Reconnecting...")
@@ -405,6 +475,7 @@ async def layer1_radar():
 
 async def layer2_sniper(symbol, scan_type, force=False, chat_id=None, user_cap=1000.0, user_risk=2.0):
     try:
+        t = get_tuning()
         if not force and check_cooldown(symbol): return
         async with aiohttp.ClientSession() as session:
             url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=100"
@@ -418,29 +489,46 @@ async def layer2_sniper(symbol, scan_type, force=False, chat_id=None, user_cap=1
         ind = IncrementalIndicators()
         if not ind.initialize(closes, highs, lows, volumes): return
 
-        sig, conditions = BreakoutHunter().check(ind) if scan_type == 'BREAKOUT' else (AccumulationDetective().check(ind), {})
+        if scan_type == 'BREAKOUT':
+            sig, conditions = BreakoutHunter().check(ind, t)
+        else:
+            sig, conditions = AccumulationDetective().check(ind, t)
 
         if sig:
-            daily_ok, daily_note = check_daily_confluence(symbol, closes[-1])
+            # Daily filter
+            daily_filter_on = t.get('bo_daily_filter', 1) == 1
+            daily_ok, daily_note = True, "Filter OFF"
+            if daily_filter_on:
+                daily_ok, daily_note = check_daily_confluence(symbol, closes[-1])
+            
             if not daily_ok and not force:
-                logger.info(f"[DAILY FILTER] {symbol} rejected: {daily_note}")
+                log_activity(f"{symbol} ❌ Daily Filter: {daily_note}")
+                stats['rejected'] += 1
                 if chat_id and bot:
                     bot.send_message(chat_id, f"🚫 <b>{symbol}</b> ditolak: {daily_note}", parse_mode="HTML")
                 return
 
-            chart_buf = generate_chart_image(symbol, closes, highs, lows, volumes,
-                                              ind.ema21, ind.ema50, sig,
+            log_activity(f"{symbol} ✅ VALID ({scan_type}) → Dispatching")
+            chart_buf = generate_chart_image(symbol, closes, highs, lows, volumes, ind.ema21, ind.ema50, sig,
                                               sig['low'] * 0.995,
                                               closes[-1] + ((closes[-1] - sig['low'] * 0.995) * 2.0),
                                               closes[-1] + ((closes[-1] - sig['low'] * 0.995) * 3.5),
                                               closes[-1] + ((closes[-1] - sig['low'] * 0.995) * 5.5))
             dispatch_signal(symbol, closes[-1], sig, ind, scan_type, chart_buf, daily_note, user_cap, user_risk)
             stats['signals_sent'] += 1
-        elif chat_id and bot and conditions:
-            report = f"🔍 <b>Diagnostic {symbol}</b>\n❌ Setup TIDAK VALID.\n\n"
-            for condition, passed in conditions.items():
-                report += f"{'✅' if passed else '❌'} {condition}\n"
-            bot.send_message(chat_id, report, parse_mode="HTML")
+        else:
+            # Log kenapa gagal (ringkas)
+            failed = [k for k, v in conditions.items() if not v]
+            if failed:
+                main_reason = failed[0].split('[')[0].strip()[:40]
+                log_activity(f"{symbol} ❌ {main_reason}")
+                stats['rejected'] += 1
+            
+            if chat_id and bot and conditions:
+                report = f"🔍 <b>Diagnostic {symbol}</b>\n❌ Setup TIDAK VALID.\n\n"
+                for condition, passed in conditions.items():
+                    report += f"{'✅' if passed else '❌'} {condition}\n"
+                bot.send_message(chat_id, report, parse_mode="HTML")
 
         stats['layer2_scans'] += 1
     except Exception as e:
@@ -462,7 +550,7 @@ async def trade_tracker():
             status, reply, new_status = t['status'], None, t['status']
             if price <= t['sl'] and status not in ['STOP_LOSS', 'COMPLETED']:
                 autopsy = spot_post_mortem(sym)
-                reply = f"🛑 <b>{sym} — STOP LOSS HIT</b>\nProteksi modal pada <code>${price:.6f}</code>\n\n🔬 <b>POST-MORTEM AUTOPSY:</b>\n{autopsy}"
+                reply = f"🛑 <b>{sym} — STOP LOSS HIT</b>\nProteksi modal pada <code>${price:.6f}</code>\n\n🔬 <b>POST-MORTEM:</b>\n{autopsy}"
                 new_status = 'STOP_LOSS'
             elif price >= t['tp3'] and status != 'COMPLETED':
                 reply, new_status = f"👑 <b>{sym} — TP3 MOONSHOT!</b>\n<code>${price:.6f}</code>", 'COMPLETED'
@@ -498,7 +586,7 @@ def generate_tear_sheet():
     best = max(trades, key=lambda t: r_map.get(t['status'], 0))
     worst = min(trades, key=lambda t: r_map.get(t['status'], 0))
     pf_str = f"{profit_factor:.2f}" if profit_factor != float('inf') else "∞"
-    msg = (
+    return (
         f"🏛️ <b>NOVA7 WEEKLY TEAR SHEET</b>\n"
         f"🗓️ <i>Audit 7 Hari (Spot)</i>\n"
         f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
@@ -512,7 +600,6 @@ def generate_tear_sheet():
         f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
         f"🔍 <i>Transparency is our edge.</i>"
     )
-    return msg
 
 def tear_sheet_scheduler():
     while True:
@@ -529,24 +616,95 @@ def tear_sheet_scheduler():
         time.sleep(60)
 
 # ==========================================
-# TELEGRAM COMMANDS
+# TELEGRAM COMMANDS (DENGAN /tune)
 # ==========================================
 @bot.message_handler(commands=['start', 'help'])
 def cmd_start(msg):
     global is_scanning
     is_scanning = True
     bot.reply_to(msg,
-        "⚡ <b>NOVA7 [PREMIUM EDITION]</b>\n\n"
+        "⚡ <b>NOVA7 [PREMIUM + TUNABLE]</b>\n\n"
         "🚀 Layer 1: Real-time Radar\n"
         "🕵️ Layer 2: Sniper + Daily Confluence\n"
         "📊 Auto-Chart Visual Proof\n"
         "💼 Fund Manager Position Sizing\n\n"
         "<b>Commands:</b>\n"
-        "/modal 1000 — Set modal anda\n"
+        "/tune show — Lihat parameter\n"
+        "/tune standard — Mode balance\n"
+        "/tune longgar — Banyak signal\n"
+        "/tune ketat — Sikit signal\n"
+        "/tune custom key=value\n"
+        "/modal 1000 — Set modal\n"
         "/force FETUSDT — Scan manual\n"
         "/report — Tear Sheet\n"
-        "/status — System stats\n"
-        "/stop — Pause", parse_mode="HTML")
+        "/status — System stats", parse_mode="HTML")
+
+@bot.message_handler(commands=['tune'])
+def cmd_tune(msg):
+    args = msg.text.split()[1:]
+    if not args or args[0] == 'show':
+        t = get_tuning()
+        modes = {0: 'STANDARD', 1: 'LONGGAR', 2: 'KETAT'}
+        mode_name = modes.get(int(t.get('mode', 0)), 'UNKNOWN')
+        report = (
+            f"🎛️ <b>TUNING PARAMETERS</b> [{mode_name}]\n"
+            f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+            f"<b>🚀 Breakout Engine:</b>\n"
+            f"• RVOL threshold: <code>{t.get('bo_rvol', 1.8):.2f}x</code>\n"
+            f"• RSI range: <code>{t.get('bo_rsi_min', 50):.0f}-{t.get('bo_rsi_max', 75):.0f}</code>\n"
+            f"• Daily Filter: <code>{'ON' if t.get('bo_daily_filter', 1) == 1 else 'OFF'}</code>\n"
+            f"<b>🕵️ Accumulation Engine:</b>\n"
+            f"• BB Width max: <code>{t.get('acc_bb_width', 6.0):.1f}%</code>\n"
+            f"• RVOL threshold: <code>{t.get('acc_rvol', 2.0):.2f}x</code>\n"
+            f"• RSI max: <code>{t.get('acc_rsi_max', 45):.0f}</code>\n"
+            f"<b>🐋 Radar:</b>\n"
+            f"• Momentum trigger: <code>{t.get('radar_momentum', 2.5):.1f}%</code>\n"
+            f"• Min volume: <code>${t.get('radar_min_vol', 15000000)/1e6:.1f}M</code>\n"
+            f"<b>⏱️ Cooldowns:</b>\n"
+            f"• Breakout: <code>{t.get('cd_breakout', 24):.0f}h</code>\n"
+            f"• Accumulation: <code>{t.get('cd_accumulation', 48):.0f}h</code>"
+        )
+        bot.reply_to(msg, report, parse_mode="HTML")
+        return
+
+    if args[0] == 'standard':
+        set_tuning({**DEFAULT_TUNING, 'mode': 0})
+        bot.reply_to(msg, "✅ <b>Mode STANDARD aktif.</b>\nBalance antara kualiti & kuantiti.", parse_mode="HTML")
+    elif args[0] == 'longgar':
+        set_tuning({
+            'mode': 1,
+            'bo_rvol': 1.4, 'bo_rsi_min': 45, 'bo_rsi_max': 80, 'bo_daily_filter': 0,
+            'acc_bb_width': 10.0, 'acc_rvol': 1.6, 'acc_rsi_max': 55,
+            'radar_momentum': 1.8, 'radar_min_vol': 8_000_000,
+            'cd_breakout': 12, 'cd_accumulation': 24
+        })
+        bot.reply_to(msg, "🟢 <b>Mode LONGGAR aktif.</b>\nLebih banyak signal, sesuai untuk Bull Market.", parse_mode="HTML")
+    elif args[0] == 'ketat':
+        set_tuning({
+            'mode': 2,
+            'bo_rvol': 2.2, 'bo_rsi_min': 55, 'bo_rsi_max': 70, 'bo_daily_filter': 1,
+            'acc_bb_width': 4.0, 'acc_rvol': 2.5, 'acc_rsi_max': 40,
+            'radar_momentum': 3.0, 'radar_min_vol': 20_000_000,
+            'cd_breakout': 48, 'cd_accumulation': 72
+        })
+        bot.reply_to(msg, "🔴 <b>Mode KETAT aktif.</b>\nSangat selective, sesuai untuk Bear/Sideways.", parse_mode="HTML")
+    elif args[0] == 'custom' and len(args) >= 2:
+        try:
+            updates = {}
+            for pair in args[1:]:
+                if '=' in pair:
+                    k, v = pair.split('=')
+                    if k in DEFAULT_TUNING:
+                        updates[k] = float(v)
+            if updates:
+                set_tuning(updates)
+                bot.reply_to(msg, f"✅ <b>Custom tuning updated:</b>\n" + "\n".join([f"• {k} = {v}" for k, v in updates.items()]), parse_mode="HTML")
+            else:
+                bot.reply_to(msg, "⚠️ Tiada parameter valid. Contoh: <code>/tune custom bo_rvol=1.5 acc_bb_width=8.0</code>", parse_mode="HTML")
+        except Exception as e:
+            bot.reply_to(msg, f"❌ Error: {str(e)[:100]}", parse_mode="HTML")
+    else:
+        bot.reply_to(msg, "⚠️ Guna: <code>/tune show</code>, <code>/tune standard</code>, <code>/tune longgar</code>, <code>/tune ketat</code>, atau <code>/tune custom key=value</code>", parse_mode="HTML")
 
 @bot.message_handler(commands=['modal'])
 def cmd_modal(msg):
@@ -561,7 +719,7 @@ def cmd_modal(msg):
             bot.reply_to(msg, "⚠️ Minimum modal: $10", parse_mode="HTML")
             return
         set_user_capital(msg.from_user.id, new_cap)
-        bot.reply_to(msg, f"✅ <b>Modal Dikemas Kini:</b> ${new_cap:,.2f}\nRisk default: 2% ($ {new_cap * 0.02:,.2f} per trade)", parse_mode="HTML")
+        bot.reply_to(msg, f"✅ <b>Modal Dikemas Kini:</b> ${new_cap:,.2f}\nRisk default: 2% (${new_cap * 0.02:,.2f} per trade)", parse_mode="HTML")
     except ValueError:
         bot.reply_to(msg, "⚠️ Format: <code>/modal 1000</code>", parse_mode="HTML")
 
@@ -574,12 +732,16 @@ def cmd_stop(msg):
 @bot.message_handler(commands=['status'])
 def cmd_status(msg):
     status = "🟢 AKTIF" if is_scanning else "🔴 STANDBY"
+    t = get_tuning()
+    modes = {0: 'STANDARD', 1: 'LONGGAR', 2: 'KETAT'}
     text = (
         f"📊 <b>NOVA7 STATUS [{status}]</b>\n"
+        f"🎛️ <b>Mode:</b> {modes.get(int(t.get('mode', 0)), 'UNKNOWN')}\n"
         f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
         f"🐋 Radar: {stats['radar_coins']} coins\n"
-        f"🎯 Analyzing: {len(layer2_queue)}\n"
+        f"🎯 L2 Scans: {stats['layer2_scans']}\n"
         f"📈 Signals: {stats['signals_sent']}\n"
+        f"❌ Rejected: {stats['rejected']}\n"
         f"🕐 {datetime.now(timezone.utc).strftime('%H:%M UTC')}"
     )
     bot.reply_to(msg, text, parse_mode="HTML")
