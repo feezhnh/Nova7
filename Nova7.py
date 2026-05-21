@@ -278,6 +278,7 @@ async def layer1_radar():
 async def layer2_sniper(symbol, scan_type, force=False):
     try:
         if not force and check_cooldown(symbol): return
+        
         async with aiohttp.ClientSession() as session:
             url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=100"
             async with session.get(url, timeout=10) as resp:
@@ -290,13 +291,15 @@ async def layer2_sniper(symbol, scan_type, force=False):
         ind = IncrementalIndicators()
         if not ind.initialize(closes, highs, lows, volumes): return
         
-                if scan_type == 'BREAKOUT':
+        if scan_type == 'BREAKOUT':
             sig, _ = BreakoutHunter().check(ind)
         else:
             sig = AccumulationDetective().check(ind)
+            
         if sig:
             dispatch_signal(symbol, closes[-1], sig, ind, scan_type)
             stats['signals_sent'] += 1
+            
         stats['layer2_scans'] += 1
     except Exception as e:
         logger.error(f"Sniper error {symbol}: {e}")
