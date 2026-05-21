@@ -305,6 +305,41 @@ async def layer2_sniper(symbol, scan_type, force=False):
         logger.error(f"Sniper error {symbol}: {e}")
     finally:
         layer2_queue.discard(symbol)
+# ==========================================
+# POST-MORTEM AUTOPSY (SPOT ONLY)
+# ==========================================
+def spot_post_mortem(symbol):
+    """Bedah siasat kenapa trade gagal berdasarkan data Spot."""
+    try:
+        url_sym = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=24"
+        url_btc = f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=24"
+        res_sym = requests.get(url_sym, timeout=10).json()
+        res_btc = requests.get(url_btc, timeout=10).json()
+
+        # 1. Kesan Volume Dry-up (Smart Money batal akumulasi)
+        vols = [float(d[7]) for d in res_sym]
+        avg_vol = sum(vols[:20]) / 20 if len(vols) >= 20 else 1
+        rvol_now = vols[-1] / avg_vol if avg_vol > 0 else 1
+
+        # 2. Kesan Macro Drag (BTC heret altcoin)
+        btc_start = float(res_btc[0][1])
+        btc_end = float(res_btc[-1][4])
+        btc_change = ((btc_end - btc_start) / btc_start) * 100
+
+        # 3. Kesan Structure Break (Gagal tahan EMA)
+        closes = [float(d[4]) for d in res_sym]
+        ema21 = sum(closes[-21:]) / 21 if len(closes) >= 21 else closes[-1]
+        below_ema = closes[-1] < ema21
+
+        reasons = []
+        if rvol_now < 1.0: reasons.append(f"🩸 <b>Volume Trap:</b> RVOL jatuh ke {rvol_now:.2f}x. Tiada susulan belian institusi.")
+        if btc_change < -1.5: reasons.append(f"📉 <b>Macro Drag:</b> BTC jatuh {btc_change:.2f}% serentak, rosakkan struktur altcoin.")
+        if below_ema: reasons.append("📉 <b>Structure Break:</b> Harga gagal pertahankan EMA21, momentum mati.")
+        if not reasons: reasons.append("🎲 <b>Market Noise:</b> Setup teknikal valid, tetapi terkena volatility rawak (Whipsaw).")
+
+        return "\n".join(reasons)
+    except Exception as e:
+        return "⚠️ Data tidak mencukupi untuk bedah siasat."  
 
 # ==========================================
 # TRADE TRACKER (REAL-TIME)
@@ -319,8 +354,10 @@ async def trade_tracker():
             price = latest_prices[sym]['c']
             status, reply, new_status = t['status'], None, t['status']
             
-            if price <= t['sl'] and status not in ['STOP_LOSS', 'COMPLETED']:
-                reply, new_status = f"🛑 <b>{sym} — STOP LOSS HIT</b>\nProteksi modal diaktifkan pada <code>${price:.6f}</code>", 'STOP_LOSS'
+                                    if price <= t['sl'] and status not in ['STOP_LOSS', 'COMPLETED']:
+                autopsy = spot_post_mortem(sym)
+                reply = f"🛑 <b>{sym} — STOP LOSS HIT</b>\nProteksi modal pada <code>${price:.6f}</code>\n\n🔬 <b>POST-MORTEM AUTOPSY:</b>\n{autopsy}"
+                new_status = 'STOP_LOSS'
             elif price >= t['tp3'] and status != 'COMPLETED':
                 reply, new_status = f"👑 <b>{sym} — TP3 MOONSHOT!</b>\n100% sasaran hancur ditewaskan di <code>${price:.6f}</code>", 'COMPLETED'
             elif price >= t['tp2'] and status not in ['TP2_HIT', 'COMPLETED']:
@@ -333,6 +370,72 @@ async def trade_tracker():
                     bot.send_message(TELEGRAM_CHAT_ID, reply, reply_to_message_id=t['msg_id'], parse_mode="HTML")
                     update_trade_status(t['msg_id'], new_status)
                 except: pass
+
+# ==========================================
+# HEDGE FUND TEAR SHEET (WEEKLY AUDIT)
+# ==========================================
+def generate_tear_sheet():
+    seven_days_ago = time.time() - (7 * 86400)
+    with db_lock, sqlite3.connect(DB_NAME) as conn:
+        conn.row_factory = sqlite3.Row
+        trades = conn.execute("SELECT * FROM active_trades WHERE status IN ('STOP_LOSS', 'TP1_HIT', 'TP2_HIT', 'COMPLETED') AND timestamp > ?", (seven_days_ago,)).fetchall()
+
+    if not trades:
+        return "📊 <b>WEEKLY TEAR SHEET</b>\n\n<i>Tiada trade yang selesai (closed) dalam 7 hari lepas.</i>"
+
+    total = len(trades)
+    wins = sum(1 for t in trades if t['status'] != 'STOP_LOSS')
+    losses = total - wins
+    win_rate = (wins / total) * 100 if total > 0 else 0
+
+    # R-Multiples (Risk to Reward Realized)
+    r_map = {'STOP_LOSS': -1.0, 'TP1_HIT': 2.0, 'TP2_HIT': 3.5, 'COMPLETED': 5.5}
+    total_r = sum(r_map.get(t['status'], 0) for t in trades)
+    gross_profit = sum(r_map.get(t['status'], 0) for t in trades if r_map.get(t['status'], 0) > 0)
+    gross_loss = abs(sum(r_map.get(t['status'], 0) for t in trades if r_map.get(t['status'], 0) < 0))
+    profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
+
+    best = max(trades, key=lambda t: r_map.get(t['status'], 0))
+    worst = min(trades, key=lambda t: r_map.get(t['status'], 0))
+    pf_str = f"{profit_factor:.2f}" if profit_factor != float('inf') else "∞"
+
+    msg = (
+        f"🏛️ <b>NOVA7 WEEKLY TEAR SHEET</b>\n"
+        f"🗓️ <i>Audit Prestasi 7 Hari (Spot Trading)</i>\n"
+        f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+        f"📊 <b>Total Closed Trades:</b> {total}\n"
+        f"🟢 <b>Win Rate:</b> {win_rate:.1f}% ({wins}W / {losses}L)\n"
+        f"⚖️ <b>Profit Factor:</b> {pf_str}\n"
+        f"📈 <b>Net Expectancy:</b> {total_r:+.1f}R\n"
+        f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+        f"🏆 <b>Best Trade:</b> {best['symbol']} ({r_map.get(best['status'], 0):+.1f}R)\n"
+        f"💀 <b>Worst Trade:</b> {worst['symbol']} ({r_map.get(worst['status'], 0):+.1f}R)\n"
+        f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+        f"🔍 <i>Transparency is our edge. Data driven, zero emotion.</i>"
+    )
+    return msg
+
+def tear_sheet_scheduler():
+    """Auto-hantar report setiap Ahad 20:00 UTC"""
+    while True:
+        now = datetime.now(timezone.utc)
+        if now.weekday() == 6 and now.hour == 20 and now.minute < 5:
+            report = generate_tear_sheet()
+            if bot and TELEGRAM_CHAT_ID:
+                try:
+                    bot.send_message(TELEGRAM_CHAT_ID, report, parse_mode="HTML")
+                    logger.info("Weekly Tear Sheet sent.")
+                except Exception as e:
+                    logger.error(f"Tear sheet error: {e}")
+            time.sleep(3600) # Sleep 1 hour prevent spam
+        time.sleep(60)
+
+@bot.message_handler(commands=['report'])
+def cmd_report(msg):
+    """Benarkan admin force-generate report bila-bila masa"""
+    bot.reply_to(msg, "⏳ <i>Menjana Tear Sheet...</i>", parse_mode="HTML")
+    report = generate_tear_sheet()
+    bot.reply_to(msg, report, parse_mode="HTML")
 
 # ==========================================
 # TELEGRAM COMMANDS (LEGACY RESTORED)
@@ -425,10 +528,7 @@ def graceful_shutdown(*args):
         try: bot.send_message(ADMIN_CHAT_ID, "🔴 <b>[OFFLINE] NOVA7 DISCONNECTED.</b> Render shutting down.", parse_mode="HTML")
         except: pass
     sys.exit(0)
-
-# ==========================================
-# MAIN ORCHESTRATOR
-# ==========================================
+    
 # ==========================================
 # MAIN ORCHESTRATOR (KALIS PELURU - ANTI 409)
 # ==========================================
@@ -458,6 +558,7 @@ if __name__ == "__main__":
         
         # Jalankan Trade Tracker
         threading.Thread(target=lambda: asyncio.run(trade_tracker()), daemon=True).start()
+        threading.Thread(target=tear_sheet_scheduler, daemon=True).start()
         
         # Jalankan Flask (Penerima Webhook) di background
         threading.Thread(target=run_flask, daemon=True).start()
