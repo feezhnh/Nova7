@@ -84,7 +84,6 @@ def admin_log(context, error):
 # 3. INDIKATOR TEKNIKAL & MATEMATIK
 # ==========================================
 def calculate_rsi(prices, period=14):
-    """Wilder's smoothing RSI"""
     arr = np.array(prices, dtype=float)
     if len(arr) < period + 1:
         return 50.0
@@ -106,7 +105,6 @@ def calculate_rsi(prices, period=14):
     return round(100.0 - (100.0 / (1.0 + rs)), 2)
 
 def calculate_ema(prices, period):
-    """Exponential Moving Average"""
     arr = np.array(prices, dtype=float)
     if len(arr) < period:
         return float(arr[-1])
@@ -117,16 +115,23 @@ def calculate_ema(prices, period):
         ema = price * k + ema * (1.0 - k)
     return round(ema, 10)
 
+# =========================================================
+# [DIPERBAIKI] calculate_atr menggunakan full series dan smoothing
+# =========================================================
 def calculate_atr(prices, period=14):
-    """Average True Range"""
     arr = np.array(prices, dtype=float)
     if len(arr) < period + 1:
         return float(arr[-1]) * 0.05
-    daily_moves = np.abs(np.diff(arr[-(period + 1):]))
-    return float(np.mean(daily_moves))
+    # Kira pergerakan mutlak
+    moves = np.abs(np.diff(arr))
+    # ATR pertama adalah purata ringkas
+    atr = np.mean(moves[:period])
+    # Smoothing seterusnya
+    for i in range(period, len(moves)):
+        atr = (atr * (period - 1) + moves[i]) / period
+    return float(atr)
 
 def calculate_fibonacci_levels(prices):
-    """Fibonacci retracement dari high/low 30 hari"""
     high_p, low_p = max(prices), min(prices)
     diff = high_p - low_p
     return {
@@ -137,10 +142,7 @@ def calculate_fibonacci_levels(prices):
     }
 
 def compute_signal_score(rsi, vol_mult, ath_change, rr_ratio, ema7, ema21):
-    """Signal Score 0-100 dengan Grade"""
     score = 0
-
-    # RSI Component
     if rsi < 25:
         score += 30
     elif rsi < 30:
@@ -152,7 +154,6 @@ def compute_signal_score(rsi, vol_mult, ath_change, rr_ratio, ema7, ema21):
     elif rsi < 50:
         score += 6
 
-    # Volume Spike Component
     if vol_mult >= 4.0:
         score += 25
     elif vol_mult >= 3.0:
@@ -162,7 +163,6 @@ def compute_signal_score(rsi, vol_mult, ath_change, rr_ratio, ema7, ema21):
     elif vol_mult >= 1.5:
         score += 8
 
-    # ATH Drop Component
     if ath_change < -80:
         score += 20
     elif ath_change < -70:
@@ -172,7 +172,6 @@ def compute_signal_score(rsi, vol_mult, ath_change, rr_ratio, ema7, ema21):
     elif ath_change < -50:
         score += 8
 
-    # Risk/Reward Component
     if rr_ratio >= 4.0:
         score += 15
     elif rr_ratio >= 3.0:
@@ -182,13 +181,11 @@ def compute_signal_score(rsi, vol_mult, ath_change, rr_ratio, ema7, ema21):
     elif rr_ratio >= 1.5:
         score += 4
 
-    # EMA Trend Component
     if ema7 >= ema21:
         score += 10
     elif ema7 >= ema21 * 0.97:
         score += 5
 
-    # Grade Determination
     if score >= 80:
         grade = "⭐⭐⭐ A+ (Max Conviction)"
     elif score >= 65:
@@ -201,11 +198,10 @@ def compute_signal_score(rsi, vol_mult, ath_change, rr_ratio, ema7, ema21):
     return score, grade
 
 # ==========================================
-# 4. PEMETAAN KATEGORI (Naratif)
+# 4. PEMETAAN KATEGORI
 # ==========================================
 def get_category_insight(categories):
     cat_str = ", ".join(categories).lower() if categories else ""
-
     if "layer 1" in cat_str or "smart contract" in cat_str:
         return "Layer 1"
     elif "defi" in cat_str or "decentralized finance" in cat_str:
@@ -224,23 +220,19 @@ def get_category_insight(categories):
         return categories[0] if categories else "Altcoin"
 
 # ==========================================
-# 5. PENJANA INLINE KEYBOARD (LENGKAP)
+# 5. PENJANA INLINE KEYBOARD (LENGKAP - TIDAK DIUBAH)
 # ==========================================
 def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
     markup = InlineKeyboardMarkup(row_width=2)
-    headers = {"x-cg-demo-api-key": CG_API_KEY} if CG_API_KEY else {}
+    data = get_cached_coin_data(coin_id)
 
-    url = f"{BASE_URL}/coins/{coin_id}?localization=false&tickers=true&market_data=false&community_data=false&developer_data=false"
     categories = []
     chain_name = "Native Chain"
     asset_platform_id = ""
     final_ca = contract_address
 
-    try:
-        res = requests.get(url, headers=headers, timeout=15)
-        data = res.json()
+    if data:
         categories = data.get("categories", [])
-
         asset_platform_id = data.get("asset_platform_id", "")
         if asset_platform_id:
             chain_name = asset_platform_id.replace("-", " ").title()
@@ -250,50 +242,36 @@ def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
             if platforms:
                 final_ca = list(platforms.values())[0]
 
-        # =========================================================
-        # BARIS 1: Cashtag Live (X/Twitter) + DexScreener (TERUS KE TOKEN)
-        # =========================================================
-        cashtag_url = f"https://x.com/search?q=%24{symbol}&f=live"
+    # BARIS 1: Cashtag + DexScreener
+    cashtag_url = f"https://x.com/search?q=%24{symbol}&f=live"
+    if final_ca:
+        dex_url = f"https://dexscreener.com/{final_ca}"
+    else:
+        dex_url = f"https://dexscreener.com/search?q={symbol}"
+    markup.row(
+        InlineKeyboardButton("🐦 Cashtag Live", url=cashtag_url),
+        InlineKeyboardButton("📊 DexScreener", url=dex_url)
+    )
 
-        # DEXSCREENER: TERUS KE HALAMAN TOKEN (bukan search)
-        if final_ca:
-            dex_url = f"https://dexscreener.com/{final_ca}"
+    # BARIS 2: TradingView Chart
+    tradingview_url = f"https://www.tradingview.com/chart/?symbol=BINANCE%3A{symbol.upper()}USDT&utm_source=telegram"
+    markup.row(InlineKeyboardButton("📈 TradingView Chart", url=tradingview_url))
+
+    # BARIS 3: DEX Sniper
+    if final_ca:
+        platform_id_lower = asset_platform_id.lower() if asset_platform_id else ""
+        if "solana" in platform_id_lower:
+            markup.row(InlineKeyboardButton("🤖 Trade on BonkBot", url=f"https://t.me/bonkbot_bot?start=ref_sniper_{final_ca}"))
         else:
-            dex_url = f"https://dexscreener.com/search?q={symbol}"
+            markup.row(InlineKeyboardButton("🦅 Trade on Maestro", url=f"https://t.me/MaestroSniperBot?start={final_ca}-sniper"))
 
-        markup.row(
-            InlineKeyboardButton("🐦 Cashtag Live", url=cashtag_url),
-            InlineKeyboardButton("📊 DexScreener", url=dex_url)
-        )
-
-        # =========================================================
-        # BARIS 2: TradingView Chart (TERUS KE CHART PAIR)
-        # =========================================================
-        tradingview_url = f"https://www.tradingview.com/chart/?symbol=BINANCE%3A{symbol.upper()}USDT&utm_source=telegram"
-        markup.row(InlineKeyboardButton("📈 TradingView Chart", url=tradingview_url))
-
-        # =========================================================
-        # BARIS 3: DEX Sniper (TERUS KE BOT DENGAN ADDRESS)
-        # =========================================================
-        if final_ca:
-            platform_id_lower = asset_platform_id.lower() if asset_platform_id else ""
-            if "solana" in platform_id_lower:
-                # BonkBot untuk Solana
-                markup.row(InlineKeyboardButton("🤖 Trade on BonkBot", url=f"https://t.me/bonkbot_bot?start=ref_sniper_{final_ca}"))
-            else:
-                # Maestro untuk EVM (Ethereum, BSC, Polygon, dll)
-                markup.row(InlineKeyboardButton("🦅 Trade on Maestro", url=f"https://t.me/MaestroSniperBot?start={final_ca}-sniper"))
-
-        # =========================================================
-        # BARIS 4: CEX (TERUS KE PAIR TRADING)
-        # =========================================================
+    # BARIS 4: CEX
+    if data:
         tickers = data.get("tickers", [])
         has_binance = has_bitget = has_gate = False
-
         for t in tickers:
             market_name = t["market"]["name"].lower()
             target_coin = t.get("target", "").upper()
-
             if "USDT" in target_coin or t.get("target") == "USDT":
                 if "binance" in market_name:
                     has_binance = True
@@ -301,28 +279,17 @@ def generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=None):
                     has_bitget = True
                 elif "gate" in market_name:
                     has_gate = True
-
-        # Binance - TERUS KE PAIR
         if has_binance:
-            binance_url = f"https://www.binance.com/en/trade/{symbol.upper()}_USDT"
-            markup.row(InlineKeyboardButton("🟨 Trade on Binance", url=binance_url))
-        # Bitget - TERUS KE PAIR
+            markup.row(InlineKeyboardButton("🟨 Trade on Binance", url=f"https://www.binance.com/en/trade/{symbol.upper()}_USDT"))
         elif has_bitget:
-            bitget_url = f"https://www.bitget.com/spot/{symbol.upper()}USDT"
-            markup.row(InlineKeyboardButton("🟦 Trade on Bitget", url=bitget_url))
-        # Gate.io - TERUS KE PAIR
+            markup.row(InlineKeyboardButton("🟦 Trade on Bitget", url=f"https://www.bitget.com/spot/{symbol.upper()}USDT"))
         elif has_gate:
-            gate_url = f"https://www.gate.io/trade/{symbol.upper()}_USDT"
-            markup.row(InlineKeyboardButton("🟥 Trade on Gate.io", url=gate_url))
-
-    except Exception as e:
-        admin_log(f"Ralat Keyboard / UI ({symbol})", e)
-        logger.error(f"Ralat keyboard: {e}")
+            markup.row(InlineKeyboardButton("🟥 Trade on Gate.io", url=f"https://www.gate.io/trade/{symbol.upper()}_USDT"))
 
     return markup, categories, final_ca, chain_name
 
 # ==========================================
-# 6. SIMPAN TRADE (active_trades.json)
+# 6. SIMPAN TRADE
 # ==========================================
 def save_trade(msg_id, symbol, coin_id, sl, tp1, tp2, tp3):
     with trades_lock:
@@ -350,7 +317,7 @@ def save_trade(msg_id, symbol, coin_id, sl, tp1, tp2, tp3):
             logger.error(f"Gagal simpan trade: {e}")
 
 # ==========================================
-# 7. ENJIN SIGNAL TELEGRAM (FORMAT LENGKAP)
+# 7. ENJIN SIGNAL TELEGRAM (FORMAT LENGKAP - TIDAK DIUBAH STRUKTUR)
 # ==========================================
 def dispatch_signal(chat_id, coin_name, symbol, rank, ath_change, vol_multiplier, rsi, current_price, fibo, coin_id, trend_24h, vol_24h, trend_7d, atr, ema7, ema21, passed_ca=None):
     if not TELEGRAM_TOKEN or not chat_id:
@@ -359,32 +326,31 @@ def dispatch_signal(chat_id, coin_name, symbol, rank, ath_change, vol_multiplier
     markup, categories, final_ca, chain_name = generate_inline_keyboard(coin_id, symbol, coin_name, contract_address=passed_ca)
     cat_name = get_category_insight(categories)
 
-    # Escape untuk HTML
     safe_coin = html.escape(coin_name)
     safe_sym = html.escape(symbol)
     safe_chain = html.escape(chain_name) if chain_name else "Native Chain"
     vol_str = f"${vol_24h:,.0f}" if vol_24h else "N/A"
     ca_display = f"<code>{final_ca}</code>" if final_ca else "<i>No CA Found</i>"
 
-    # SL/TP Multipliers berdasarkan kategori (Nova7: scalping)
+    # =========================================================
+    # [DIPERBAIKI] Multiplier SL/TP untuk Nova7 (scalping)
+    # =========================================================
     if "Meme" in cat_name:
-        mult_sl, mult_tp1, mult_tp2, mult_tp3 = 1.5, 2.5, 4.5, 7.0
-    elif "Layer 1" in cat_name or "Layer 2" in cat_name:
-        mult_sl, mult_tp1, mult_tp2, mult_tp3 = 2.0, 1.5, 3.0, 5.0
+        mult_sl, mult_tp1, mult_tp2, mult_tp3 = 1.5, 2.0, 3.5, 5.0
     else:
-        mult_sl, mult_tp1, mult_tp2, mult_tp3 = 2.0, 1.5, 3.0, 5.0
+        mult_sl, mult_tp1, mult_tp2, mult_tp3 = 1.5, 2.0, 3.5, 6.0
 
-    # Kira SL dan TP
     sl = current_price - (mult_sl * atr)
     tp1 = current_price + (mult_tp1 * atr)
     tp2 = current_price + (mult_tp2 * atr)
     tp3 = current_price + (mult_tp3 * atr)
-    sl = min(sl, fibo['Fibo_0'] * 0.97)  # Hard floor
+    # Hard floor SL (tidak terlalu jauh)
+    sl = max(sl, current_price * 0.85)
 
     # Risk/Reward Ratio
     risk = max(current_price - sl, 1e-10)
     reward = tp2 - current_price
-    rr = round(reward / risk, 2)
+    rr = round(reward / risk, 2) if risk > 0 else 0
 
     # Signal Score & Grade
     _, grade = compute_signal_score(rsi, vol_multiplier, ath_change, rr, ema7, ema21)
@@ -429,7 +395,13 @@ def dispatch_signal(chat_id, coin_name, symbol, rank, ath_change, vol_multiplier
     else:
         risk_tier = "Tier-2 (Standard Risk - Max 3% Modal)"
 
-    # 🚀 MESEJ SIGNAL LENGKAP (TIDAK DIRINGKASKAN)
+    # =========================================================
+    # [DIPERBAIKI] Entry zone menggunakan Fibonacci 0.618 dan 0.786
+    # (FORMAT MESEJ TIDAK BERUBAH, CUBA NILAI SAHAJA)
+    # =========================================================
+    entry_min_display = fibo['Fibo_618']
+    entry_max_display = fibo['Fibo_786']
+
     msg = (
         f"🪙 <b>{safe_coin} ({safe_sym})</b> — <i>{safe_chain}</i>\n"
         f"💳 <b>CA:</b> {ca_display}\n"
@@ -446,7 +418,7 @@ def dispatch_signal(chat_id, coin_name, symbol, rank, ath_change, vol_multiplier
         f"📊 <b>Fibo (D1):</b> {fibo_result}\n"
         "........................................................\n"
         "🛠️ <b>ALGO TRADE SETUP (Chart: D1)</b>\n"
-        f"🔸 <b>Entry Zone:</b> <code>${current_price:.6f}</code> - <code>${fibo['Fibo_786']:.6f}</code>\n"
+        f"🔸 <b>Entry Zone:</b> <code>${entry_min_display:.6f}</code> - <code>${entry_max_display:.6f}</code>\n"
         f"🛑 <b>Stop Loss:</b> <code>${sl:.6f}</code>\n\n"
         "🎯 <b>Targets:</b>\n"
         f"➡️ <b>TP1:</b> <code>${tp1:.6f}</code>\n"
@@ -473,11 +445,11 @@ def dispatch_signal(chat_id, coin_name, symbol, rank, ath_change, vol_multiplier
         logger.error(f"Mesej Telegram gagal dihantar: {e}")
 
 # ==========================================
-# 8. TRADE TRACKER (Nova7: setiap 60 saat untuk scalping)
+# 8. TRADE TRACKER (Nova7: setiap 30 saat untuk scalping)
 # ==========================================
 def run_trade_tracker_loop():
     while True:
-        time.sleep(60)
+        time.sleep(30)  # 30 saat untuk scalping
         if not TELEGRAM_CHAT_ID or not os.path.exists("active_trades.json"):
             continue
 
@@ -498,7 +470,6 @@ def run_trade_tracker_loop():
 
         headers = {"x-cg-demo-api-key": CG_API_KEY} if CG_API_KEY else {}
 
-        # Retry mechanism
         current_prices = {}
         for attempt in range(3):
             try:
@@ -572,10 +543,9 @@ def run_trade_tracker_loop():
                     logger.error(f"Gagal simpan update tracker: {e}")
 
 # ==========================================
-# 9. WEEKLY REPORT SCHEDULER (hantar laporan setiap Ahad 20:00 UTC)
+# 9. WEEKLY REPORT SCHEDULER
 # ==========================================
 def schedule_weekly_report():
-    """Hantar laporan ke ADMIN_CHAT_ID setiap Ahad jam 20:00 UTC"""
     while True:
         now = datetime.now(timezone.utc)
         days_until_sunday = (6 - now.weekday()) % 7
@@ -596,7 +566,7 @@ def schedule_weekly_report():
         time.sleep(86400 * 7)
 
 # ==========================================
-# 10. SCANNER LOOP (Nova7: page 5-7, timeframe hourly, ATR period 7)
+# 10. SCANNER LOOP (DENGAN ATR MINIMUM)
 # ==========================================
 def run_scanner_loop():
     global is_scanning
@@ -662,7 +632,6 @@ def run_scanner_loop():
             time.sleep(60)
             continue
 
-        # Fetch top coins (page 5-7)
         top_coins = []
         for page in range(5, 7):
             if not is_scanning:
@@ -684,8 +653,6 @@ def run_scanner_loop():
 
         cooldown_db = get_cooldowns()
         current_time = time.time()
-
-        # Kumpulkan kandidat yang lulus historical check
         candidates = []
 
         for coin in top_coins:
@@ -704,13 +671,11 @@ def run_scanner_loop():
                 ath_change = coin.get('ath_change_percentage')
                 current_vol = coin.get('total_volume')
 
-                # NOVA7: ATH drop > -50%
                 if ath_change is None or ath_change > -50:
                     continue
                 if current_vol is None or current_vol < 500000:
                     continue
 
-                # Historical data (hourly, 7 days)
                 hist_url = f"{BASE_URL}/coins/{coin_id}/market_chart"
                 params_hist = {"vs_currency": "usd", "days": "7", "interval": "hourly"}
                 hist_res = requests.get(hist_url, params=params_hist, headers=headers, timeout=15)
@@ -742,7 +707,7 @@ def run_scanner_loop():
                 rsi_14 = calculate_rsi(prices, period=14)
                 ema7 = calculate_ema(prices, 7)
                 ema21 = calculate_ema(prices, 21)
-                atr_val = calculate_atr(prices, period=7)
+                atr_val = calculate_atr(prices, period=14)  # period 14 untuk ATR yang stabil
 
                 if vol_mult >= 2.0:
                     if rsi_14 > 50:
@@ -781,7 +746,7 @@ def run_scanner_loop():
                 logger.error(f"Error processing candidate: {e}")
                 time.sleep(2)
 
-        # Batch live price untuk semua candidates
+        # Batch live price
         if candidates:
             ids_str = ",".join([c['coin_id'] for c in candidates])
             live_prices = {}
@@ -799,19 +764,26 @@ def run_scanner_loop():
                 if live_price is None:
                     continue
 
-                # Entry condition: current price <= Fibo 0.618
-                if live_price <= cand['fibo']['Fibo_618']:
+                # =========================================================
+                # [DIPERBAIKI] ATR minimum 0.5% dari harga dan entry zone Fibonacci
+                # =========================================================
+                min_atr = live_price * 0.005  # 0.5%
+                atr_effective = max(cand['atr'], min_atr)
+
+                entry_min_fibo = cand['fibo']['Fibo_618']
+                entry_max_fibo = cand['fibo']['Fibo_786']
+
+                if entry_min_fibo <= live_price <= entry_max_fibo:
                     trend_24 = cand['coin'].get('price_change_percentage_24h', 0)
                     dispatch_signal(
                         TELEGRAM_CHAT_ID, cand['coin']['name'], cand['symbol'],
                         cand['coin'].get('market_cap_rank', 'N/A'), cand['ath_change'],
                         cand['vol_mult'], cand['rsi'], live_price, cand['fibo'], coin_id,
                         trend_24, cand['current_vol'], cand['trend_7d_hist'],
-                        cand['atr'], cand['ema7'], cand['ema21']
+                        atr_effective, cand['ema7'], cand['ema21']
                     )
                     save_cooldown(coin_id)
 
-        # End of cycle
         if is_scanning:
             if ADMIN_CHAT_ID:
                 try:
@@ -869,7 +841,6 @@ def manual_ca_check(message):
         trend_24 = market_res.get('price_change_percentage_24h', 0)
         vol_24 = market_res.get('total_volume', 0)
 
-        # Historical data (hourly)
         hist_url = f"{BASE_URL}/coins/{coin_id}/market_chart"
         hist_data = requests.get(hist_url, params={"vs_currency": "usd", "days": "7", "interval": "hourly"}, headers=headers, timeout=15).json()
         prices = [p[1] for p in hist_data['prices']]
@@ -877,10 +848,9 @@ def manual_ca_check(message):
 
         rsi_14 = calculate_rsi(prices, 14) if len(prices) >= 30 else 0.0
         fib = calculate_fibonacci_levels(prices) if len(prices) >= 30 else {"Fibo_100": current_price_live, "Fibo_786": current_price_live, "Fibo_618": current_price_live, "Fibo_0": current_price_live}
-
         ema7 = calculate_ema(prices, 7)
         ema21 = calculate_ema(prices, 21)
-        atr_val = calculate_atr(prices, period=7)
+        atr_val = calculate_atr(prices, period=14)
 
         trend_7d = 0.0
         if len(prices) >= 8:
@@ -889,10 +859,14 @@ def manual_ca_check(message):
         avg_vol7 = np.mean(volumes[-8:-1]) if len(volumes) >= 8 else vol_24
         vol_mult = vol_24 / avg_vol7 if avg_vol7 > 0 else 1.0
 
+        # ATR minimum untuk manual
+        min_atr = current_price_live * 0.005
+        atr_final = max(atr_val, min_atr)
+
         dispatch_signal(
             TELEGRAM_CHAT_ID, coin_name, symbol, rank, ath_change, vol_mult,
             rsi_14, current_price_live, fib, coin_id, trend_24, vol_24, trend_7d,
-            atr_val, ema7, ema21, passed_ca=passed_address
+            atr_final, ema7, ema21, passed_ca=passed_address
         )
         bot.reply_to(message, "✅ <b>Analisis Selesai!</b>", parse_mode="HTML")
 
@@ -902,7 +876,6 @@ def manual_ca_check(message):
 
 @bot.message_handler(commands=['report'])
 def cmd_report(message):
-    """Hantar laporan mingguan (hanya admin)"""
     if str(message.chat.id) != ADMIN_CHAT_ID:
         bot.reply_to(message, "Akses ditolak. Command ini untuk admin sahaja.")
         return
@@ -940,13 +913,10 @@ if __name__ == "__main__":
         except Exception:
             pass
 
-    # Mulakan semua thread
     threading.Thread(target=run_trade_tracker_loop, daemon=True).start()
     threading.Thread(target=run_scanner_loop, daemon=True).start()
     threading.Thread(target=schedule_weekly_report, daemon=True).start()
 
-    # Daftarkan command journal
     journal.register_commands(bot, ADMIN_CHAT_ID)
 
-    # Jalankan web server
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
