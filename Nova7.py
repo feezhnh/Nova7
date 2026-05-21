@@ -260,9 +260,9 @@ async def layer1_radar():
             logger.error(f"❌ [RADAR] Disconnected: {e}. Reconnecting...")
             await asyncio.sleep(5)
 
-async def layer2_sniper(symbol, scan_type):
+async def layer2_sniper(symbol, scan_type, force=False):
     try:
-        if check_cooldown(symbol): return
+        if not force and check_cooldown(symbol): return
         async with aiohttp.ClientSession() as session:
             url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=100"
             async with session.get(url, timeout=10) as resp:
@@ -352,8 +352,9 @@ def cmd_force(msg):
     sym = args[1].upper()
     if not sym.endswith('USDT'): sym += 'USDT'
     bot.reply_to(msg, f"🎯 <b>Sniper Deployed:</b> Menganalisis {sym}...", parse_mode="HTML")
-    asyncio.run_coroutine_threadsafe(layer2_sniper(sym, 'BREAKOUT'), asyncio.get_event_loop())
-
+    
+    # FIX: Cipta event loop baru khusus untuk thread command ini
+    threading.Thread(target=lambda: asyncio.run(layer2_sniper(sym, 'BREAKOUT', force=True)), daemon=True).start()
 # ==========================================
 # FLASK WEBHOOK & SHUTDOWN
 # ==========================================
