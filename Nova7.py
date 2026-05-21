@@ -355,7 +355,7 @@ async def trade_tracker():
             price = latest_prices[sym]['c']
             status, reply, new_status = t['status'], None, t['status']
             
-                                    if price <= t['sl'] and status not in ['STOP_LOSS', 'COMPLETED']:
+            if price <= t['sl'] and status not in ['STOP_LOSS', 'COMPLETED']:
                 autopsy = spot_post_mortem(sym)
                 reply = f"🛑 <b>{sym} — STOP LOSS HIT</b>\nProteksi modal pada <code>${price:.6f}</code>\n\n🔬 <b>POST-MORTEM AUTOPSY:</b>\n{autopsy}"
                 new_status = 'STOP_LOSS'
