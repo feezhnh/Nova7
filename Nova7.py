@@ -363,7 +363,51 @@ def cmd_status(msg):
     )
     bot.reply_to(msg, text, parse_mode="HTML")
 
-def cmd_force
+@bot.message_handler(commands=['force'])
+def cmd_force(msg):
+    args = msg.text.split()
+    if len(args) < 2:
+        bot.reply_to(msg, "⚠️ <b>Format:</b> <code>/force FETUSDT</code>", parse_mode="HTML")
+        return
+        
+    sym = args[1].upper()
+    if not sym.endswith('USDT'): sym += 'USDT'
+    
+    bot.reply_to(msg, f"🎯 <b>Sniper Deployed:</b> Menganalisis {sym}...", parse_mode="HTML")
+    
+    def run_force_scan():
+        try:
+            url = f"https://api.binance.com/api/v3/klines?symbol={sym}&interval=1h&limit=100"
+            res = requests.get(url, timeout=10).json()
+            
+            if isinstance(res, dict) and 'code' in res:
+                bot.send_message(msg.chat.id, f"❌ <b>{sym}</b> tidak wujud di Binance Spot.", parse_mode="HTML")
+                return
+                
+            closes = [float(d[4]) for d in res]
+            highs = [float(d[2]) for d in res]
+            lows = [float(d[3]) for d in res]
+            volumes = [float(d[7]) for d in res]
+            
+            ind = IncrementalIndicators()
+            ind.initialize(closes, highs, lows, volumes)
+            
+            sig, conditions = BreakoutHunter().check(ind)
+            
+            if sig:
+                dispatch_signal(sym, closes[-1], sig, ind, 'BREAKOUT')
+                bot.send_message(msg.chat.id, f"✅ <b>{sym}</b>: Setup VALID! Signal telah dihantar ke channel.", parse_mode="HTML")
+            else:
+                report = f"🔍 <b>Diagnostic {sym}</b>\n❌ Setup TIDAK VALID.\n\n"
+                for condition, passed in conditions.items():
+                    icon = "✅" if passed else "❌"
+                    report += f"{icon} {condition}\n"
+                bot.send_message(msg.chat.id, report, parse_mode="HTML")
+                
+        except Exception as e:
+            bot.send_message(msg.chat.id, f"❌ <b>Ralat Teknikal:</b> {str(e)[:100]}", parse_mode="HTML")
+
+    threading.Thread(target=run_force_scan, daemon=True).start()
 # ==========================================
 # FLASK WEBHOOK & SHUTDOWN
 # ==========================================
