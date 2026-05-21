@@ -375,6 +375,9 @@ def graceful_shutdown(*args):
 # ==========================================
 # MAIN ORCHESTRATOR
 # ==========================================
+# ==========================================
+# MAIN ORCHESTRATOR (KALIS PELURU - ANTI 409)
+# ==========================================
 def run_flask():
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
 
@@ -383,16 +386,49 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, graceful_shutdown)
     init_db()
     
-    threading.Thread(target=lambda: asyncio.run(trade_tracker()), daemon=True).start()
-    
     RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
-    if RENDER_URL and bot:
-        bot.remove_webhook()
-        time.sleep(1)
-        bot.set_webhook(url=f"{RENDER_URL}/webhook")
-        
-    # Flask di background, Asyncio Radar di Main Thread
-    threading.Thread(target=run_flask, daemon=True).start()
     
-    try: asyncio.run(layer1_radar())
-    except KeyboardInterrupt: graceful_shutdown()
+    # PENTING: Paksa buang webhook lama dan tunggu 2 saat untuk elak Race Condition
+    if bot:
+        bot.remove_webhook()
+        time.sleep(2) 
+    
+    if RENDER_URL:
+        # ==========================================
+        # MODE A: BERJALAN DI RENDER (GUNA WEBHOOK)
+        # ==========================================
+        logger.info("[ENV] Render Cloud detected. Activating Webhook Mode...")
+        if bot:
+            bot.set_webhook(url=f"{RENDER_URL}/webhook")
+            logger.info(f"[WEBHOOK] Aktif: {RENDER_URL}/webhook")
+        
+        # Jalankan Trade Tracker
+        threading.Thread(target=lambda: asyncio.run(trade_tracker()), daemon=True).start()
+        
+        # Jalankan Flask (Penerima Webhook) di background
+        threading.Thread(target=run_flask, daemon=True).start()
+        
+        # Jalankan Radar (Main Thread)
+        try: 
+            asyncio.run(layer1_radar())
+        except KeyboardInterrupt: 
+            graceful_shutdown()
+            
+    else:
+        # ==========================================
+        # MODE B: BERJALAN DI KOMPUTER LOKAL (GUNA POLLING)
+        # ==========================================
+        logger.info("[ENV] Localhost detected. Activating Polling Mode...")
+        
+        # Jalankan Trade Tracker
+        threading.Thread(target=lambda: asyncio.run(trade_tracker()), daemon=True).start()
+        
+        # Jalankan Radar di background
+        threading.Thread(target=lambda: asyncio.run(layer1_radar()), daemon=True).start()
+        
+        # Jalankan Polling di Main Thread (Hanya untuk test lokal)
+        if bot:
+            try:
+                bot.infinity_polling()
+            except KeyboardInterrupt:
+                graceful_shutdown()
