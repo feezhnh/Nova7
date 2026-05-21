@@ -1,4 +1,6 @@
-pyTelegramBotAPI
+telebot
+flask
 requests
 numpy
-flask
+gspread
+oauth2client
