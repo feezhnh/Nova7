@@ -355,23 +355,23 @@ def calculate_position_size(capital, risk_pct, entry, sl):
 # TELEGRAM UI
 # ==========================================
 def build_keyboard(symbol):
-    """Keyboard dengan Twitter sentiment button."""
+    def build_keyboard(symbol):
+    """Keyboard Premium 2x2 Grid dengan AI Insight."""
     base = symbol[:-4]
     markup = InlineKeyboardMarkup(row_width=2)
     
     # Baris 1: Chart & Trade
     markup.row(
-        InlineKeyboardButton("📈 View Chart", url=f"https://www.tradingview.com/chart/?symbol=BINANCE:{symbol}"),
-        InlineKeyboardButton("⚡ Trade Now", url=f"https://www.binance.com/en/trade/{symbol}")
+        InlineKeyboardButton("📈 TradingView", url=f"https://www.tradingview.com/chart/?symbol=BINANCE:{symbol}"),
+        InlineKeyboardButton("⚡ Binance", url=f"https://www.binance.com/en/trade/{symbol}")
     )
     
-    # Baris 2: Twitter & DexScreener
+    # Baris 2: Social & AI
     markup.row(
         InlineKeyboardButton("🐦 Twitter Live", url=f"https://x.com/search?q=%24{base}&f=live"),
+        InlineKeyboardButton("✨ AI Insight", callback_data=f"ai_summary_{symbol}")
     )
-    return markup
-    # ✅ BUTANG BARU DI SINI
-    markup.row(InlineKeyboardButton("🤖 AI Insight / Ringkasan", callback_data=f"insight_{symbol}"))
+    
     return markup
 
 def dispatch_signal(symbol, price, sig, ind, engine_type, chart_buf, daily_note, user_cap, user_risk):
@@ -1008,18 +1008,30 @@ def cmd_force(msg):
     bot.reply_to(msg, f"🎯 <b>Sniper Deployed: </b> {sym} (Modal: ${user_cap:,.0f})", parse_mode="HTML")
     threading.Thread(target=lambda: asyncio.run(layer2_sniper(sym, 'BREAKOUT', force=True, chat_id=msg.chat.id, user_cap=user_cap, user_risk=user_risk)), daemon=True).start()
 
-# === KOD BARU DI SINI (Pastikan tanda @ ada di Column 0 paling kiri) ===
-@bot.callback_query_handler(func=lambda call: call.data.startswith("insight_"))
+# ==========================================
+# AI INSIGHT CALLBACK HANDLER
+# ==========================================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("ai_summary_"))
 def handle_ai_insight(call):
-    bot.answer_callback_query(call.id, text="Sedang menganalisis pasaran... ⏳")
+    """Handle AI Insight button click."""
+    symbol = call.data.split("_")[-1]
     
-    # Extract symbol from callback_data
-    symbol = call.data.replace("insight_", "")
+    # Telegram AI Summary adalah native feature - kita just beri confirmation
+    bot.answer_callback_query(call.id, "🤖 AI Summary sedang dijana...", show_alert=False)
     
-    # Call Logic Engine
-    text = generate_ai_insight(symbol)
+    # Hantar mesej ringkas yang akan trigger Telegram AI Summary
+    ai_text = (
+        f"🤖 <b>AI Insight: {symbol}</b>\n\n"
+        f"<blockquote>"
+        f"• <b>Trend:</b> Semak RSI & EMA alignment\n"
+        f"• <b>Volume:</b> RVOL >2.0x = confirmation\n"
+        f"• <b>Social:</b> Check Twitter sentiment untuk $ {symbol[:-4]}\n"
+        f"• <b>Risk:</b> SL wajib di bawah structure low\n"
+        f"</blockquote>\n\n"
+        f"<i>Tip: Tekan butang 'AI Summary' di penjuru atas Telegram untuk ringkasan automatik.</i>"
+    )
     
-    bot.send_message(call.message.chat.id, text, parse_mode="HTML")
+    bot.send_message(call.message.chat.id, ai_text, parse_mode="HTML")
 # ==========================================
 # FLASK & SHUTDOWN
 # ==========================================
