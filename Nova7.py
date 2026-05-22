@@ -878,20 +878,21 @@ def cmd_force(msg):
     sym = args[1].upper()
     if not sym.endswith('USDT'): sym += 'USDT'
     user_cap, user_risk = get_user_capital(msg.from_user.id)
-    bot.reply_to(msg, f"🎯 <b>Sniper Deployed:</b> {sym} (Modal: ${user_cap:,.0f})", parse_mode="HTML")
+    bot.reply_to(msg, f"🎯 <b>Sniper Deployed: </b> {sym} (Modal: ${user_cap:,.0f})", parse_mode="HTML")
     threading.Thread(target=lambda: asyncio.run(layer2_sniper(sym, 'BREAKOUT', force=True, chat_id=msg.chat.id, user_cap=user_cap, user_risk=user_risk)), daemon=True).start()
-    @bot.callback_query_handler(func=lambda call: call.data.startswith("insight_"))
+
+# === KOD BARU DI SINI (Pastikan tanda @ ada di Column 0 paling kiri) ===
+@bot.callback_query_handler(func=lambda call: call.data.startswith("insight_"))
 def handle_ai_insight(call):
     bot.answer_callback_query(call.id, text="Sedang menganalisis pasaran... ⏳")
     
-    # Extract symbol from callback_data (e.g., insight_BTCUSDT)
+    # Extract symbol from callback_data
     symbol = call.data.replace("insight_", "")
     
     # Call Logic Engine
     text = generate_ai_insight(symbol)
     
     bot.send_message(call.message.chat.id, text, parse_mode="HTML")
-
 # ==========================================
 # FLASK & SHUTDOWN
 # ==========================================
