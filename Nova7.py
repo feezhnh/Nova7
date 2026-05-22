@@ -285,9 +285,64 @@ def check_daily_confluence(symbol, current_price):
     except Exception as e:
         return False, f"Error: {str(e)[:50]}"
 
-# ==========================================
-# POSITION SIZING (FUND MANAGER)
-# ==========================================
+# ==============================================================
+# POSITION SIZING (FUND MANAGER) & AI INSIGHT ENGINE (ZERO COST)
+# ==============================================================
+
+def generate_ai_insight(symbol):
+    """
+    Logic Engine: Membaca indikator dan menulis ringkasan 'bahasa manusia'.
+    Zero Cost, No External API.
+    """
+    try:
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=100"
+        res = requests.get(url, timeout=10).json()
+        
+        closes = [float(d[4]) for d in res]
+        volumes = [float(d[7]) for d in res]
+        if len(closes) < 51: return "❌ Data tidak mencukupi untuk analisis."
+
+        # Kira indikator asas
+        close_now = closes[-1]
+        ema21 = sum(closes[-21:]) / 21
+        ema50 = sum(closes[-50:]) / 50
+        
+        # Kira RVOL
+        avg_vol = sum(volumes[-21:-1]) / 20 if len(volumes) > 21 else 1
+        rvol = volumes[-1] / avg_vol if avg_vol > 0 else 1
+
+        # Logik Analisis
+        analysis = f"🤖 **NOVA7 AI INSIGHT: {symbol}**\n"
+        analysis += "┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+        
+        # 1. Trend Check
+        if close_now > ema21 > ema50:
+            analysis += "📈 <b>TREND: BULLISH KUAT</b>\nHarga berada di atas semua EMA. Momentum menaik."
+        elif close_now < ema21 < ema50:
+            analysis += "📉 <b>TREND: BEARISH KUAT</b>\nHarga jatuh di bawah EMA. Trend sedang menurun."
+        else:
+            analysis += "⚖️ <b>TREND: CHOP/SIDEWAYS</b>\nHarga bercampur-campur. Hati-hati dengan fakeout."
+
+        # 2. Volume Check
+        if rvol > 2.0:
+            analysis += f"\n🔥 <b>VOLUME: TINGGI ({rvol:.1f}x)</b>\nAda minat pasaran yang luar biasa. Kemungkinan besar 'Jerung' sedang aktif."
+        elif rvol < 0.8:
+            analysis += f"\n🌫️ <b>VOLUME: RENDAH ({rvol:.1f}x)</b>\nPasaran sunyi. Risiko manipulasi tinggi."
+        else:
+            analysis += f"\n💧 <b>VOLUME: BIASA ({rvol:.1f}x)</b>"
+
+        # 3. Summary Recommendation
+        if close_now > ema21 and rvol > 1.5:
+            analysis += "\n\n💡 <b>KESIMPULAN:</b> Setup positif. Sesuai untuk BUY pada pullback ke EMA21."
+        elif close_now < ema50 and rvol > 2.0:
+            analysis += "\n\n💡 <b>KESIMPULAN:</b> Setup Reversal/Accumulation. Sesuai untuk entry jika RSI rendah."
+        else:
+            analysis += "\n\n💡 <b>KESIMPULAN:</b> Setup kurang jelas. Disarankan WAIT & SEE."
+
+        return analysis
+
+    except Exception as e:
+        return f"❌ Gagal analisis: {str(e)[:50]}"
 def calculate_position_size(capital, risk_pct, entry, sl):
     risk_usd = capital * (risk_pct / 100.0)
     risk_distance = entry - sl
@@ -307,6 +362,10 @@ def build_keyboard(symbol):
         InlineKeyboardButton("📈 TradingView", url=f"https://www.tradingview.com/chart/?symbol=BINANCE:{symbol}")
     )
     markup.row(InlineKeyboardButton("🟨 Trade on Binance", url=f"https://www.binance.com/en/trade/{symbol}"))
+    
+    # ✅ BUTANG BARU DI SINI
+    markup.row(InlineKeyboardButton("🤖 AI Insight / Ringkasan", callback_data=f"insight_{symbol}"))
+    
     markup.row(InlineKeyboardButton("🐦 Twitter Search", url=f"https://x.com/search?q=%24{base}&f=live"))
     return markup
 
@@ -821,6 +880,17 @@ def cmd_force(msg):
     user_cap, user_risk = get_user_capital(msg.from_user.id)
     bot.reply_to(msg, f"🎯 <b>Sniper Deployed:</b> {sym} (Modal: ${user_cap:,.0f})", parse_mode="HTML")
     threading.Thread(target=lambda: asyncio.run(layer2_sniper(sym, 'BREAKOUT', force=True, chat_id=msg.chat.id, user_cap=user_cap, user_risk=user_risk)), daemon=True).start()
+    @bot.callback_query_handler(func=lambda call: call.data.startswith("insight_"))
+def handle_ai_insight(call):
+    bot.answer_callback_query(call.id, text="Sedang menganalisis pasaran... ⏳")
+    
+    # Extract symbol from callback_data (e.g., insight_BTCUSDT)
+    symbol = call.data.replace("insight_", "")
+    
+    # Call Logic Engine
+    text = generate_ai_insight(symbol)
+    
+    bot.send_message(call.message.chat.id, text, parse_mode="HTML")
 
 # ==========================================
 # FLASK & SHUTDOWN
