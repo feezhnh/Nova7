@@ -722,20 +722,20 @@ async def layer2_sniper(symbol, scan_type, force=False, chat_id=None, user_cap=1
                 return
 
             log_activity(f"{symbol} ✅ VALID ({scan_type}) → Dispatching")
-            def dispatch_signal(symbol, price, sig, ind, engine_type, chart_buf, daily_note, user_cap, user_risk):
-    if not bot or not TELEGRAM_CHAT_ID or check_cooldown(symbol): return
+def dispatch_signal(symbol, price, sig, ind, engine_type, chart_buf, daily_note, user_cap, user_risk):
+        if not bot or not TELEGRAM_CHAT_ID or check_cooldown(symbol): return
     
-    sl = sig['low'] * 0.995
-    risk = price - sl
-    if risk <= 0: return
+        sl = sig['low'] * 0.995
+        risk = price - sl
+        if risk <= 0: return
+       
+        tp1, tp2, tp3 = price + (risk * 2.0), price + (risk * 3.5), price + (risk * 5.5)
+        pos_usd, pos_coins, risk_usd = calculate_position_size(user_cap, user_risk, price, sl)
     
-    tp1, tp2, tp3 = price + (risk * 2.0), price + (risk * 3.5), price + (risk * 5.5)
-    pos_usd, pos_coins, risk_usd = calculate_position_size(user_cap, user_risk, price, sl)
-    
-    t = get_tuning()
-    mode_name = 'STANDARD'
-    if t.get('mode', 0) == 1: mode_name = 'AGGRESSIVE'
-    elif t.get('mode', 0) == 2: mode_name = 'CONSERVATIVE'
+        t = get_tuning()
+        mode_name = 'STANDARD'
+        if t.get('mode', 0) == 1: mode_name = 'AGGRESSIVE'
+        elif t.get('mode', 0) == 2: mode_name = 'CONSERVATIVE'
 
     # === SOCIAL SENTIMENT CHECK ===
     base = symbol[:-4]
