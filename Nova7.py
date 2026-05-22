@@ -744,7 +744,7 @@ def dispatch_signal(symbol, price, sig, ind, engine_type, chart_buf, daily_note,
     social_text = f"{social_emoji} <b>Social:</b> {social_data['sentiment']} ({social_data['score']}/100) | Vol: {social_data.get('volume_level', 'N/A')}"
     # ===============================
 
-    header = f"\\NOVA7// {engine_type} SIGNAL [ {mode_name} ]"
+    header = f"NOVA7 {engine_type} SIGNAL [ {mode_name} ]"
     
     body_text = (
         f"<blockquote>\n"
