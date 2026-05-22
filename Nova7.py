@@ -375,51 +375,49 @@ def build_keyboard(symbol):
     return markup
 
 def dispatch_signal(symbol, price, sig, ind, engine_type, chart_buf, daily_note, user_cap, user_risk):
-    if not bot or not TELEGRAM_CHAT_ID or check_cooldown(symbol): return
+    if not bot or not TELEGRAM_CHAT_ID or check_cooldown(symbol): 
+        return
     
     sl = sig['low'] * 0.995
     risk = price - sl
-    if risk <= 0: return
+    if risk <= 0: 
+        return
     
     tp1, tp2, tp3 = price + (risk * 2.0), price + (risk * 3.5), price + (risk * 5.5)
     pos_usd, pos_coins, risk_usd = calculate_position_size(user_cap, user_risk, price, sl)
     
     t = get_tuning()
     mode_name = 'STANDARD'
-    if t.get('mode', 0) == 1: mode_name = 'AGGRESSIVE'
-    elif t.get('mode', 0) == 2: mode_name = 'CONSERVATIVE'
+    if t.get('mode', 0) == 1: 
+        mode_name = 'LONGGAR'
+    elif t.get('mode', 0) == 2: 
+        mode_name = 'KETAT'
 
-    # Format Header Premium
-    header = f"NOVA7 {engine_type} SIGNAL [ {mode_name} ]"
-    
-    # Format Body dengan Blockquote (Nampak Premium)
-    # Blockquote ini akan membantu Telegram AI menjana summary yang lebih tepat
-    body_text = (
-        f"<blockquote>\n"
-        f"<b>🪙 Asset:</b> {symbol}\n"
-        f"<b>💵 Price:</b> <code>${price:.6f}</code>\n"
-        f"<b>📊 Rank:</b> #{symbol} | <b>Trend:</b> {daily_note}\n"
-        f"</blockquote>\n\n"
-        
-        f"🔹 <b>ENTRY ZONE:</b> <code>${price:.6f}</code>\n"
-        f"🔻 <b>STOP LOSS:</b> <code>${sl:.6f}</code>\n\n"
-        
-        f" <b>TAKE PROFIT TARGETS:</b>\n"
-        f"  • TP1 (2R): <code>${tp1:.6f}</code>\n"
-        f"  • TP2 (3.5R): <code>${tp2:.6f}</code>\n"
-        f"  • TP3 (5.5R): <code>${tp3:.6f}</code>\n\n"
-        
-        f"️ <b>INDICATOR DATA:</b>\n"
-        f"  • RSI: {ind.rsi:.1f} | RVOL: {sig['rvol']:.2f}x\n"
-        f"  • EMA21: ${ind.ema21:.5f} | EMA50: ${ind.ema50:.5f}\n\n"
-        
-        f"💼 <b>RISK MGMT:</b> Size: {pos_coins:.2f} coins (Risk ${risk_usd:.2f})"
+    emoji, title = ("🚀", "BREAKOUT RADAR") if engine_type == 'BREAKOUT' else ("🕵️", "ACCUMULATION SNIPER")
+    desc = f"Break: <code>${sig.get('break_level', 0):.6f}</code>" if engine_type == 'BREAKOUT' else f"BB Squeeze: {sig.get('bb', 0):.2f}%"
+
+    msg = (
+        f"{emoji} <b>{title}: {symbol}</b> <i>[{mode_name}]</i>\n"
+        f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+        f"💵 <b>Price: </b> <code>${price:.6f}</code>\n"
+        f"{desc}\n"
+        f"🔥 <b>RVOL: </b> {sig['rvol']:.2f}x | <b>RSI: </b> {ind.rsi:.1f}\n"
+        f"📊 <b>EMA21: </b> ${ind.ema21:.6f} | <b>EMA50: </b> ${ind.ema50:.6f}\n"
+        f"🗓️ <b>Daily TF: </b> <i>{daily_note}</i>\n"
+        f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+        f"🛑 <b>SL: </b> <code>${sl:.6f}</code>\n"
+        f"🎯 <b>TP1 (2R): </b> <code>${tp1:.6f}</code>\n"
+        f"🎯 <b>TP2 (3.5R): </b> <code>${tp2:.6f}</code>\n"
+        f"🎯 <b>TP3 (5.5R): </b> <code>${tp3:.6f}</code>\n"
+        f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+        f"💼 <b>FUND MANAGER (${user_cap:,.0f}):</b>\n"
+        f"   • <b>Buy: </b> {pos_coins:.4f} {symbol[:-4]} (<code>${pos_usd:,.2f}</code>)\n"
+        f"   • <b>Max Loss: </b> <code>-${risk_usd:,.2f}</code> ({user_risk}%)\n"
+        f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+        f"🐋 <i>Nova7 Institutional Setup</i>"
     )
-    
-    msg = f"{header}\n{body_text}"
 
     try:
-        # Hantar Chart + Mesej
         if chart_buf:
             sent = bot.send_photo(TELEGRAM_CHAT_ID, chart_buf, caption=msg, parse_mode="HTML", reply_markup=build_keyboard(symbol))
         else:
