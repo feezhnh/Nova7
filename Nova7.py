@@ -238,7 +238,22 @@ class AccumulationDetective:
 # ==========================================
 def generate_chart_image(symbol, closes, highs, lows, volumes, ema21, ema50, sig, sl, tp1, tp2, tp3):
     try:
-        n = min(60, len(closes))
+        # Pastikan n sekurang-kurangnya 1
+        n = max(1, min(60, len(closes)))
+        # Jika data kosong, gunakan dummy data untuk elak error
+        if len(closes) == 0:
+            closes = [0.01] * n
+            highs = [0.011] * n
+            lows = [0.009] * n
+            volumes = [1000] * n
+        elif len(closes) < n:
+            # Pad dengan nilai terakhir
+            last = closes[-1]
+            closes = closes + [last] * (n - len(closes))
+            highs = highs + [highs[-1]] * (n - len(highs))
+            lows = lows + [lows[-1]] * (n - len(lows))
+            volumes = volumes + [volumes[-1]] * (n - len(volumes))
+
         df = pd.DataFrame({
             'Open': [closes[i-1] if i > 0 else closes[i] for i in range(len(closes)-n, len(closes))],
             'High': highs[-n:],
@@ -246,7 +261,7 @@ def generate_chart_image(symbol, closes, highs, lows, volumes, ema21, ema50, sig
             'Close': closes[-n:],
             'Volume': volumes[-n:]
         }, index=pd.date_range(end=datetime.now(), periods=n, freq='H'))
-        
+
         addplots = []
         if ema21: addplots.append(mpf.make_addplot([ema21]*n, color='#00BFFF', width=1.2))
         if ema50: addplots.append(mpf.make_addplot([ema50]*n, color='#FFA500', width=1.2))
@@ -268,17 +283,19 @@ def generate_chart_image(symbol, closes, highs, lows, volumes, ema21, ema50, sig
         plt.close(fig)
         buf.seek(0)
         return buf
+
     except Exception as e:
         logger.error(f"❌ CHART GENERATION FAILED for {symbol}: {e}")
-        # Fallback: Return a blank image with error message (TIDAK PERNAH RETURN None)
+        # Fallback: gambar hitam dengan mesej error (supaya Telegram tetap hantar attachment)
         buf = io.BytesIO()
         fig, ax = plt.subplots(figsize=(10, 6))
-        ax.text(0.5, 0.5, f"CHART ERROR\n{symbol}\n{e}", ha='center', va='center', fontsize=12, color='red')
+        ax.set_facecolor('#0E0E0E')
+        ax.text(0.5, 0.5, f"CHART ERROR\n{symbol}\n{e}", ha='center', va='center', fontsize=12, color='red', wrap=True)
         ax.axis('off')
         fig.savefig(buf, format='png', dpi=100, facecolor='#0E0E0E')
         plt.close(fig)
         buf.seek(0)
-        return buf  # <<<< INI BARIS YANG DITAMBAH
+        return buf
 
 # ==========================================
 # DAILY CONFLUENCE (TRAP KILLER)
