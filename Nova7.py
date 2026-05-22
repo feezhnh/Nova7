@@ -141,49 +141,138 @@ def get_user_capital(user_id):
 # MATEMATIK O(1)
 # ==========================================
 class IncrementalIndicators:
-    def __init__(self):
-        self.closes, self.highs, self.lows, self.volumes = [], [], [], []
-        self.ema21 = self.ema50 = None
+    """
+    Pengiraan indikator secara streaming.
+    Tiada numpy, tiada loop sejarah. Hanya matematik tulen O(1).
+    """
+    def __init__(self, period=14):
+        self.period = period
+        self.count = 0
+        
+        # EMA State
+        self.ema7 = None
+        self.ema21 = None
+        self.k7 = 2.0 / (7 + 1)
+        self.k21 = 2.0 / (21 + 1)
+        
+        # RSI State (Wilder's Smoothing)
+        self.avg_gain = 0.0
+        self.avg_loss = 0.0
         self.rsi = 50.0
-        self.avg_gain = self.avg_loss = 0.0
         self.prev_close = None
-        self.k21, self.k50 = 2.0 / 22, 2.0 / 51
+        
+        # ATR State
+        self.atr = 0.0
+        self.prev_high = None
+        self.prev_low = None
 
-    def initialize(self, closes, highs, lows, volumes):
-        if len(closes) < 51: return False
-        self.closes, self.highs, self.lows, self.volumes = closes[-100:], highs[-100:], lows[-100:], volumes[-100:]
-        self.ema21, self.ema50 = sum(closes[:21]) / 21, sum(closes[:50]) / 50
-        for p in closes[50:]:
-            self.ema21 = p * self.k21 + self.ema21 * (1 - self.k21)
-            self.ema50 = p * self.k50 + self.ema50 * (1 - self.k50)
-        deltas = [closes[i] - closes[i-1] for i in range(1, 15)]
-        self.avg_gain = sum(d for d in deltas if d > 0) / 14
-        self.avg_loss = sum(-d for d in deltas if d < 0) / 14
-        for i in range(14, len(closes)):
-            d = closes[i] - closes[i-1]
-            self.avg_gain = (self.avg_gain * 13 + (d if d > 0 else 0)) / 14
-            self.avg_loss = (self.avg_loss * 13 + (-d if d < 0 else 0)) / 14
-        self._update_rsi()
+    def initialize(self, closes: list, highs: list, lows: list):
+        """Panggil SEKALI sahaja semasa startup dengan data historikal."""
+        if len(closes) < max(self.period, 21) + 1:
+            raise ValueError("Data historikal tidak mencukupi untuk inisialisasi")
+            
+        # Init EMA
+        self.ema7 = sum(closes[:7]) / 7.0
+        self.ema21 = sum(closes[:21]) / 21.0
+        
+        # Init RSI
+        deltas = [closes[i] - closes[i-1] for i in range(1, self.period + 1)]
+        gains = [d if d > 0 else 0 for d in deltas]
+        losses = [-d if d < 0 else 0 for d in deltas]
+        self.avg_gain = sum(gains) / self.period
+        self.avg_loss = sum(losses) / self.period
+        
+        # Init ATR
+        trs = []
+        for i in range(1, self.period + 1):
+            tr = max(
+                highs[i] - lows[i],
+                abs(highs[i] - closes[i-1]),
+                abs(lows[i] - closes[i-1])
+            )
+            trs.append(tr)
+        self.atr = sum(trs) / self.period
+        
         self.prev_close = closes[-1]
-        return True
+        self.prev_high = highs[-1]
+        self.prev_low = lows[-1]
+        self.count = len(closes)
+        
+        # Kemas kini EMA untuk baki data
+        for price in closes[21:]:
+            self.ema7 = price * self.k7 + self.ema7 * (1 - self.k7)
+            self.ema21 = price * self.k21 + self.ema21 * (1 - self.k21)
+            
+        # Kemas kini RSI untuk baki data
+        for i in range(self.period + 1, len(closes)):
+            delta = closes[i] - closes[i-1]
+            gain = delta if delta > 0 else 0
+            loss = -delta if delta < 0 else 0
+            self.avg_gain = (self.avg_gain * (self.period - 1) + gain) / self.period
+            self.avg_loss = (self.avg_loss * (self.period - 1) + loss) / self.period
+            
+        self._update_rsi_value()
+        self.prev_close = closes[-1]
 
-    def _update_rsi(self):
-        self.rsi = 100.0 if self.avg_loss == 0 else 100 - (100 / (1 + self.avg_gain / self.avg_loss))
+    def update(self, close: float, high: float, low: float):
+        """Dipanggil setiap kali candle CLOSE atau tick baru masuk."""
+        self.count += 1
+        
+        # === UPDATE EMA ===
+        if self.ema7 is None:
+            self.ema7 = close
+            self.ema21 = close
+        else:
+            self.ema7 = close * self.k7 + self.ema7 * (1 - self.k7)
+            self.ema21 = close * self.k21 + self.ema21 * (1 - self.k21)
+        
+        # === UPDATE RSI ===
+        if self.prev_close is not None:
+            delta = close - self.prev_close
+            gain = delta if delta > 0 else 0.0
+            loss = -delta if delta < 0 else 0.0
+            
+            if self.count <= self.period:
+                self.avg_gain = (self.avg_gain * (self.count - 1) + gain) / self.count
+                self.avg_loss = (self.avg_loss * (self.count - 1) + loss) / self.count
+            else:
+                self.avg_gain = (self.avg_gain * (self.period - 1) + gain) / self.period
+                self.avg_loss = (self.avg_loss * (self.period - 1) + loss) / self.period
+                
+            self._update_rsi_value()
+        
+        # === UPDATE ATR ===
+        if self.prev_close is not None:
+            tr = max(
+                high - low,
+                abs(high - self.prev_close),
+                abs(low - self.prev_close)
+            )
+            if self.count <= self.period:
+                self.atr = (self.atr * (self.count - 1) + tr) / self.count
+            else:
+                self.atr = (self.atr * (self.period - 1) + tr) / self.period
+        
+        # Simpan state terkini
+        self.prev_close = close
+        self.prev_high = high
+        self.prev_low = low
 
-    def get_rvol(self):
-        if len(self.volumes) < 21: return 1.0
-        avg = sum(self.volumes[-21:-1]) / 20
-        return self.volumes[-1] / avg if avg > 0 else 1.0
+    def _update_rsi_value(self):
+        if self.avg_loss == 0:
+            self.rsi = 100.0
+        else:
+            rs = self.avg_gain / self.avg_loss
+            self.rsi = 100.0 - (100.0 / (1.0 + rs))
 
-    def get_bb_width(self):
-        if len(self.closes) < 20: return 10.0
-        recent = self.closes[-20:]
-        sma = sum(recent) / 20
-        std = (sum((p - sma) ** 2 for p in recent) / 20) ** 0.5
-        return (std / sma) * 100 if sma > 0 else 10.0
-
-    def get_recent_high(self):
-        return max(self.highs[-21:-1]) if len(self.highs) >= 21 else 0
+    def get_snapshot(self) -> dict:
+        return {
+            "rsi": round(self.rsi, 2),
+            "ema7": round(self.ema7, 8) if self.ema7 else None,
+            "ema21": round(self.ema21, 8) if self.ema21 else None,
+            "atr": round(self.atr, 8) if self.atr else None,
+            "count": self.count
+        }
 
 # ==========================================
 # ENGINES (DYNAMIC TUNING)
