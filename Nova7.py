@@ -355,7 +355,6 @@ def calculate_position_size(capital, risk_pct, entry, sl):
 # TELEGRAM UI
 # ==========================================
 def build_keyboard(symbol):
-    def build_keyboard(symbol):
     """Keyboard Premium 2x2 Grid dengan AI Insight."""
     base = symbol[:-4]
     markup = InlineKeyboardMarkup(row_width=2)
