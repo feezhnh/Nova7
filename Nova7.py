@@ -390,7 +390,7 @@ def dispatch_signal(symbol, price, sig, ind, engine_type, chart_buf, daily_note,
     elif t.get('mode', 0) == 2: mode_name = 'CONSERVATIVE'
 
     # Format Header Premium
-    header = f"\NOVA7// {engine_type} SIGNAL [ {mode_name} ]"
+    header = f"NOVA7 {engine_type} SIGNAL [ {mode_name} ]"
     
     # Format Body dengan Blockquote (Nampak Premium)
     # Blockquote ini akan membantu Telegram AI menjana summary yang lebih tepat
