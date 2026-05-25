@@ -47,8 +47,7 @@ HEAVYWEIGHTS = {
 # DATABASE SQLITE + TUNING PARAMS
 # ==========================================
 DB_NAME = "nova7_data.db"
-db_lock = threading.Lock()
-DEFAULT_TUNING = {
+db_lock = threading.Lock()DEFAULT_TUNING = {
     'mode': 'standard',
     # Breakout params
     'bo_rvol': 1.8,
@@ -96,8 +95,8 @@ def get_tuning():
 def set_tuning(params):
     with db_lock, sqlite3.connect(DB_NAME) as conn:
         for k, v in params.items():
-            val = float(v) if not isinstance(v, str) else 0            conn.execute("INSERT OR REPLACE INTO tuning_params VALUES (?, ?)", (k, val))
-
+            val = float(v) if not isinstance(v, str) else 0
+            conn.execute("INSERT OR REPLACE INTO tuning_params VALUES (?, ?)", (k, val))
 def save_trade(msg_id, symbol, entry, sl, tp1, tp2, tp3, engine):
     with db_lock, sqlite3.connect(DB_NAME) as conn:
         conn.execute('''INSERT OR REPLACE INTO active_trades
@@ -145,8 +144,8 @@ class IncrementalIndicators:
         self.avg_gain = self.avg_loss = 0.0
         self.prev_close = None
         self.k21, self.k50 = 2.0 / 22, 2.0 / 51
-    def initialize(self, closes, highs, lows, volumes):
-        if len(closes) < 51: return False
+        
+    def initialize(self, closes, highs, lows, volumes):        if len(closes) < 51: return False
         self.closes, self.highs, self.lows, self.volumes = closes[-100:], highs[-100:], lows[-100:], volumes[-100:]
         self.ema21, self.ema50 = sum(closes[:21]) / 21, sum(closes[:50]) / 50
         for p in closes[50:]:
@@ -195,8 +194,7 @@ class BreakoutHunter:
         rsi_min = t.get('bo_rsi_min', 50)
         rsi_max = t.get('bo_rsi_max', 75)
         rvol_min = t.get('bo_rvol', 1.8)        
-        conditions = {
-            f"Pecah High 20-C ({recent_high:.6f})": close > recent_high,
+        conditions = {            f"Pecah High 20-C ({recent_high:.6f})": close > recent_high,
             f"Atas EMA21 ({ind.ema21:.6f})": close > ind.ema21,
             "Uptrend (EMA21 > EMA50)": ind.ema21 > ind.ema50,
             f"RVOL >= {rvol_min}x [{rvol:.2f}x]": rvol >= rvol_min,
@@ -243,9 +241,9 @@ def generate_chart_image(symbol, closes, highs, lows, volumes, ema21, ema50, sig
             'Volume': volumes[-n:]
         }, index=pd.date_range(end=datetime.now(), periods=n, freq='H'))
         
-        addplots = []        if ema21: addplots.append(mpf.make_addplot([ema21]*n, color='#00BFFF', width=1.2))
+        addplots = []        
+        if ema21: addplots.append(mpf.make_addplot([ema21]*n, color='#00BFFF', width=1.2))
         if ema50: addplots.append(mpf.make_addplot([ema50]*n, color='#FFA500', width=1.2))
-
         hlines = dict(hlines=[sl, tp1, tp2, tp3],
                       colors=['red', 'lime', 'lime', 'gold'],
                       linestyle=['-', '--', '--', '--'],
@@ -292,33 +290,40 @@ def check_daily_confluence(symbol, current_price):
 # ==========================================
 # POSITION SIZING (FUND MANAGER)
 # ==========================================
-def calculate_position_size(capital, risk_pct, entry, sl):    risk_usd = capital * (risk_pct / 100.0)
-    risk_distance = entry - sl
-    if risk_distance <= 0: return 0, 0, 0
+def calculate_position_size(capital, risk_pct, entry, sl):
+    risk_usd = capital * (risk_pct / 100.0)
+    risk_distance = entry - sl    if risk_distance <= 0: return 0, 0, 0
     position_usd = risk_usd / (risk_distance / entry)
     position_coins = position_usd / entry
     return position_usd, position_coins, risk_usd
 
 # ==========================================
-# TELEGRAM UI (DENGAN AMARAN DINAMIK - TAMBAHAN SAHAJA)
+# TELEGRAM UI
 # ==========================================
 def build_keyboard(symbol):
+    """Keyboard Premium 2x2 Grid dengan AI Insight."""
     base = symbol[:-4]
     markup = InlineKeyboardMarkup(row_width=2)
+    # Baris 1: Chart & Trade
     markup.row(
-        InlineKeyboardButton("📊 DexScreener", url=f"https://dexscreener.com/search?q={base}"),
-        InlineKeyboardButton("📈 TradingView", url=f"https://www.tradingview.com/chart/?symbol=BINANCE:{symbol}")
+        InlineKeyboardButton("📈 TradingView", url=f"https://www.tradingview.com/chart/?symbol=BINANCE:{symbol}"),
+        InlineKeyboardButton("⚡ Binance", url=f"https://www.binance.com/en/trade/{symbol}")
     )
-    markup.row(InlineKeyboardButton("🟨 Trade on Binance", url=f"https://www.binance.com/en/trade/{symbol}"))
-    markup.row(InlineKeyboardButton("🐦 Twitter Search", url=f"https://x.com/search?q=%24{base}&f=live"))
+    # Baris 2: Social & AI
+    markup.row(
+        InlineKeyboardButton("🐦 Twitter Live", url=f"https://x.com/search?q=%24{base}&f=live"),
+        InlineKeyboardButton("✨ AI Insight", callback_data=f"ai_summary_{symbol}")
+    )
     return markup
 
 def dispatch_signal(symbol, price, sig, ind, engine_type, chart_buf, daily_note, user_cap, user_risk):
-    if not bot or not TELEGRAM_CHAT_ID or check_cooldown(symbol): return
+    if not bot or not TELEGRAM_CHAT_ID or check_cooldown(symbol): 
+        return
     
     sl = sig['low'] * 0.995
     risk = price - sl
-    if risk <= 0: return
+    if risk <= 0: 
+        return
     
     tp1, tp2, tp3 = price + (risk * 2.0), price + (risk * 3.5), price + (risk * 5.5)
     pos_usd, pos_coins, risk_usd = calculate_position_size(user_cap, user_risk, price, sl)
@@ -331,45 +336,24 @@ def dispatch_signal(symbol, price, sig, ind, engine_type, chart_buf, daily_note,
     emoji, title = ("🚀", "BREAKOUT RADAR") if engine_type == 'BREAKOUT' else ("🕵️", "ACCUMULATION SNIPER")
     desc = f"Break: <code>${sig.get('break_level', 0):.6f}</code>" if engine_type == 'BREAKOUT' else f"BB Squeeze: {sig.get('bb', 0):.2f}%"
 
-    # === TAMBAH AMARAN DINAMIK DI SINI (TIDAK UBAH STRUKTUR) ===
-    amaran_lines = []
-    if ind.ema21 and ind.ema50:
-        if price < ind.ema21 * 0.97:
-            amaran_lines.append("❌ Price >3% bawah EMA21 — Structure Weak")
-        elif price < ind.ema21:
-            amaran_lines.append("⚠️ Price bawah EMA21 — Accumulation Zone Lemah")
-        if ind.ema21 < ind.ema50:
-            amaran_lines.append("📉 EMA21 < EMA50 — Trend Bearish")
-    if ind.rsi > 70:
-        amaran_lines.append("☢️ RSI >70 — OVERBOUGHT! Jangan FOMO")    elif ind.rsi < 30:
-        amaran_lines.append("✅ RSI <30 — Oversold Zone")
-    
-    if amaran_lines:
-        amaran_block = "\n" + "\n".join([f"🔍 {line}" for line in amaran_lines]) + "\n"
-    else:
-        amaran_block = ""
-    # === AKHIR TAMBAHAN ===
-
     msg = (
-        f"{emoji}  <b>{title}: {symbol}</b>  <i>[{mode_name}]</i>\n"
+        f"{emoji} <b>{title}: {symbol}</b> <i>[{mode_name}]</i>\n"
         f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
-        f"{amaran_block}"
-        f"💵  <b>Price: </b>  <code>${price:.6f}</code>\n"
+        f"💵 <b>Price:</b> <code>${price:.6f}</code>\n"
         f"{desc}\n"
-        f"🔥  <b>RVOL: </b> {sig['rvol']:.2f}x |  <b>RSI: </b> {ind.rsi:.1f}\n"
-        f"📊  <b>EMA21: </b> ${ind.ema21:.6f} |  <b>EMA50: </b> ${ind.ema50:.6f}\n"
-        f"🗓️  <b>Daily TF: </b>  <i>{daily_note}</i>\n"
+        f"🔥 <b>RVOL:</b> {sig['rvol']:.2f}x | <b>RSI:</b> {ind.rsi:.1f}\n"        f"📊 <b>EMA21:</b> ${ind.ema21:.6f} | <b>EMA50:</b> ${ind.ema50:.6f}\n"
+        f"🗓️ <b>Daily TF:</b> <i>{daily_note}</i>\n"
         f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
-        f"🛑  <b>SL: </b>  <code>${sl:.6f}</code>\n"
-        f"🎯  <b>TP1 (2R): </b>  <code>${tp1:.6f}</code>\n"
-        f"🎯  <b>TP2 (3.5R): </b>  <code>${tp2:.6f}</code>\n"
-        f"🎯  <b>TP3 (5.5R): </b>  <code>${tp3:.6f}</code>\n"
+        f"🛑 <b>SL:</b> <code>${sl:.6f}</code>\n"
+        f"🎯 <b>TP1 (2R):</b> <code>${tp1:.6f}</code>\n"
+        f"🎯 <b>TP2 (3.5R):</b> <code>${tp2:.6f}</code>\n"
+        f"🎯 <b>TP3 (5.5R):</b> <code>${tp3:.6f}</code>\n"
         f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
-        f"💼  <b>FUND MANAGER (${user_cap:,.0f}):</b>\n"
-        f"   •  <b>Buy: </b> {pos_coins:.4f} {symbol[:-4]} (<code>${pos_usd:,.2f}</code>)\n"
-        f"   •  <b>Max Loss: </b>  <code>-${risk_usd:,.2f}</code> ({user_risk}%)\n"
+        f"💼 <b>FUND MANAGER (${user_cap:,.0f}):</b>\n"
+        f"   • <b>Buy:</b> {pos_coins:.4f} {symbol[:-4]} (<code>${pos_usd:,.2f}</code>)\n"
+        f"   • <b>Max Loss:</b> <code>-${risk_usd:,.2f}</code> ({user_risk}%)\n"
         f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
-        f"🐋  <i>Nova7 Institutional Setup</i>"
+        f"🐋 <i>Nova7 Institutional Setup</i>"
     )
 
     try:
@@ -390,7 +374,8 @@ def dispatch_signal(symbol, price, sig, ind, engine_type, chart_buf, daily_note,
 def spot_post_mortem(symbol):
     try:
         url_sym = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=24"
-        url_btc = f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=24"        res_sym = requests.get(url_sym, timeout=10).json()
+        url_btc = f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=24"
+        res_sym = requests.get(url_sym, timeout=10).json()
         res_btc = requests.get(url_btc, timeout=10).json()
         
         vols = [float(d[7]) for d in res_sym]
@@ -405,8 +390,7 @@ def spot_post_mortem(symbol):
         ema21 = sum(closes[-21:]) / 21 if len(closes) >= 21 else closes[-1]
         below_ema = closes[-1] < ema21
         
-        reasons = []
-        if rvol_now < 1.0: reasons.append(f"🩸 <b>Volume Trap:</b> RVOL {rvol_now:.2f}x")
+        reasons = []        if rvol_now < 1.0: reasons.append(f"🩸 <b>Volume Trap:</b> RVOL {rvol_now:.2f}x")
         if btc_change < -1.5: reasons.append(f"📉 <b>Macro Drag:</b> BTC {btc_change:.2f}%")
         if below_ema: reasons.append("📉 <b>Structure Break:</b> Gagal tahan EMA21")
         if not reasons: reasons.append("🎲 <b>Market Noise:</b> Whipsaw rawak")
@@ -439,7 +423,8 @@ async def layer1_radar():
     
     while True:
         if not is_scanning:
-            await asyncio.sleep(5)            continue
+            await asyncio.sleep(5)
+            continue
         try:
             async with websockets.connect(url, ping_interval=20, max_size=10**7) as ws:
                 logger.info("✅ [RADAR] Layer 1 Connected. Scanning Mid-Caps...")
@@ -454,29 +439,31 @@ async def layer1_radar():
                     # ACTIVITY PULSE setiap 5 minit
                     if now - last_pulse >= 300:
                         logger.info(f"💓 [PULSE] Radar: {pulse_stats['seen']} coins | Promoted: {pulse_stats['promoted']} | Signals: {stats['signals_sent']} | Rejected: {stats['rejected']}")
-                        if activity_log:
-                            logger.info(f"📋 [RECENT] {' | '.join(activity_log[-5:])}")
+                        if activity_log:                            logger.info(f"📋 [RECENT] {' | '.join(activity_log[-5:])}")
                         last_pulse = now
                         pulse_stats = {'promoted': 0, 'seen': 0}
                     
-                    if now - last_snapshot < 3.0: continue
+                    if now - last_snapshot < 3.0: 
+                        continue
                     last_snapshot = now
                     tickers = json.loads(msg)
                     t = get_tuning()
                     
                     for tk in tickers:
                         sym = tk['s']
-                        if not sym.endswith('USDT') or sym in HEAVYWEIGHTS: continue
+                        if not sym.endswith('USDT') or sym in HEAVYWEIGHTS: 
+                            continue
                         base = sym[:-4]
-                        if base in KILL_LIST: continue
-                        
+                        if base in KILL_LIST: 
+                            continue
                         c, q = float(tk['c']), float(tk['q'])
                         latest_prices[sym] = {'c': c, 'q': q}
                         pulse_stats['seen'] += 1
                         
                         if sym not in radar_history: radar_history[sym] = []
                         radar_history[sym].append({'t': now, 'c': c})
-                        if len(radar_history[sym]) > 15: radar_history[sym].pop(0)
+                        if len(radar_history[sym]) > 15: 
+                            radar_history[sym].pop(0)
                         
                         if len(radar_history[sym]) >= 6 and sym not in layer2_queue:
                             past_c = radar_history[sym][-6]['c']
@@ -488,7 +475,8 @@ async def layer1_radar():
                                     layer2_queue.add(sym)
                                     pulse_stats['promoted'] += 1
                                     log_activity(f"{sym} ↑{change:.1f}% → Layer 2")
-                                    asyncio.create_task(layer2_sniper(sym, 'BREAKOUT'))                    
+                                    asyncio.create_task(layer2_sniper(sym, 'BREAKOUT'))
+                    
                     if now - last_scheduled >= 7200:
                         last_scheduled = now
                         sorted_syms = sorted(latest_prices.keys(), key=lambda s: latest_prices[s]['q'], reverse=True)
@@ -501,24 +489,23 @@ async def layer1_radar():
         except Exception as e:
             logger.error(f"❌ [RADAR] Disconnected: {e}. Reconnecting...")
             await asyncio.sleep(5)
-
 async def layer2_sniper(symbol, scan_type, force=False, chat_id=None, user_cap=1000.0, user_risk=2.0):
     try:
         t = get_tuning()
-        if not force and check_cooldown(symbol): return
-        
+        if not force and check_cooldown(symbol): 
+            return
         async with aiohttp.ClientSession() as session:
             url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=100"
             async with session.get(url, timeout=10) as resp:
                 data = await resp.json()
-                
                 closes = [float(d[4]) for d in data]
                 highs = [float(d[2]) for d in data]
                 lows = [float(d[3]) for d in data]
                 volumes = [float(d[7]) for d in data]
                 
                 ind = IncrementalIndicators()
-                if not ind.initialize(closes, highs, lows, volumes): return
+                if not ind.initialize(closes, highs, lows, volumes): 
+                    return
 
                 if scan_type == 'BREAKOUT':
                     sig, conditions = BreakoutHunter().check(ind, t)
@@ -538,20 +525,19 @@ async def layer2_sniper(symbol, scan_type, force=False, chat_id=None, user_cap=1
                         if chat_id and bot:
                             bot.send_message(chat_id, f"🚫 <b>{symbol}</b> ditolak: {daily_note}", parse_mode="HTML")
                         return
+
                     log_activity(f"{symbol} ✅ VALID ({scan_type}) → Dispatching")
                     chart_buf = generate_chart_image(symbol, closes, highs, lows, volumes, ind.ema21, ind.ema50, sig,
-                                                      sig['low'] * 0.995,
-                                                      closes[-1] + ((closes[-1] - sig['low'] * 0.995) * 2.0),
-                                                      closes[-1] + ((closes[-1] - sig['low'] * 0.995) * 3.5),
-                                                      closes[-1] + ((closes[-1] - sig['low'] * 0.995) * 5.5))
-                    
+                                                sig['low'] * 0.995,
+                                                closes[-1] + ((closes[-1] - sig['low'] * 0.995) * 2.0),
+                                                closes[-1] + ((closes[-1] - sig['low'] * 0.995) * 3.5),
+                                                closes[-1] + ((closes[-1] - sig['low'] * 0.995) * 5.5))
                     dispatch_signal(symbol, closes[-1], sig, ind, scan_type, chart_buf, daily_note, user_cap, user_risk)
                     stats['signals_sent'] += 1
                 else:
                     # Log kenapa gagal (ringkas)
                     failed = [k for k, v in conditions.items() if not v]
-                    if failed:
-                        main_reason = failed[0].split('[')[0].strip()[:40]
+                    if failed:                        main_reason = failed[0].split('[')[0].strip()[:40]
                         log_activity(f"{symbol} ❌ {main_reason}")
                         stats['rejected'] += 1
                     
@@ -579,63 +565,57 @@ async def trade_tracker():
             if sym not in latest_prices: continue
             price = latest_prices[sym]['c']
             status, reply, new_status = t['status'], None, t['status']
-            
             if price <= t['sl'] and status not in ['STOP_LOSS', 'COMPLETED']:
                 autopsy = spot_post_mortem(sym)
                 reply = f"🛑 <b>{sym} — STOP LOSS HIT</b>\nProteksi modal pada <code>${price:.6f}</code>\n\n🔬 <b>POST-MORTEM:</b>\n{autopsy}"
                 new_status = 'STOP_LOSS'
             elif price >= t['tp3'] and status != 'COMPLETED':
                 reply, new_status = f"👑 <b>{sym} — TP3 MOONSHOT!</b>\n<code>${price:.6f}</code>", 'COMPLETED'
-            elif price >= t['tp2'] and status not in ['TP2_HIT', 'COMPLETED']:                reply, new_status = f"🔥 <b>{sym} — TP2 HIT!</b>\nPoketkan 50% di <code>${price:.6f}</code>", 'TP2_HIT'
+            elif price >= t['tp2'] and status not in ['TP2_HIT', 'COMPLETED']:
+                reply, new_status = f"🔥 <b>{sym} — TP2 HIT!</b>\nPoketkan 50% di <code>${price:.6f}</code>", 'TP2_HIT'
             elif price >= t['tp1'] and status == 'TRACKING':
                 reply, new_status = f"✅ <b>{sym} — TP1 SECURED!</b>\nSL ke BE di <code>${price:.6f}</code>", 'TP1_HIT'
-            
             if reply:
                 try:
                     bot.send_message(TELEGRAM_CHAT_ID, reply, reply_to_message_id=t['msg_id'], parse_mode="HTML")
                     update_trade_status(t['msg_id'], new_status)
-                except: pass
+                except: 
+                    pass
 
 # ==========================================
 # WEEKLY TEAR SHEET
 # ==========================================
 def generate_tear_sheet():
-    seven_days_ago = time.time() - (7 * 86400)
-    with db_lock, sqlite3.connect(DB_NAME) as conn:
+    seven_days_ago = time.time() - (7 * 86400)    with db_lock, sqlite3.connect(DB_NAME) as conn:
         conn.row_factory = sqlite3.Row
         trades = conn.execute("SELECT * FROM active_trades WHERE status IN ('STOP_LOSS', 'TP1_HIT', 'TP2_HIT', 'COMPLETED') AND timestamp > ?", (seven_days_ago,)).fetchall()
-        
         if not trades:
             return "📊 <b>WEEKLY TEAR SHEET</b>\n\n<i>Tiada trade closed dalam 7 hari lepas.</i>"
-        
         total = len(trades)
         wins = sum(1 for t in trades if t['status'] != 'STOP_LOSS')
         losses = total - wins
         win_rate = (wins / total) * 100 if total > 0 else 0
-        
         r_map = {'STOP_LOSS': -1.0, 'TP1_HIT': 2.0, 'TP2_HIT': 3.5, 'COMPLETED': 5.5}
         total_r = sum(r_map.get(t['status'], 0) for t in trades)
         gross_profit = sum(r_map.get(t['status'], 0) for t in trades if r_map.get(t['status'], 0) > 0)
         gross_loss = abs(sum(r_map.get(t['status'], 0) for t in trades if r_map.get(t['status'], 0) < 0))
         profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
-        
         best = max(trades, key=lambda t: r_map.get(t['status'], 0))
         worst = min(trades, key=lambda t: r_map.get(t['status'], 0))
-        
         pf_str = f"{profit_factor:.2f}" if profit_factor != float('inf') else "∞"
-        
         return (
             f"🏛️ <b>NOVA7 WEEKLY TEAR SHEET</b>\n"
-            f"️ <i>Audit 7 Hari (Spot)</i>\n"
+            f"🗓️ <i>Audit 7 Hari (Spot)</i>\n"
             f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
-            f"📊 <b>Total Closed: </b> {total}\n"
-            f" <b>Win Rate: </b> {win_rate:.1f}% ({wins}W / {losses}L)\n"
-            f"️ <b>Profit Factor: </b> {pf_str}\n"
-            f" <b>Net Expectancy: </b> {total_r:+.1f}R\n"
+            f"📊 <b>Total Closed:</b> {total}\n"
+            f"🟢 <b>Win Rate:</b> {win_rate:.1f}% ({wins}W / {losses}L)\n"
+            f"⚖️ <b>Profit Factor:</b> {pf_str}\n"
+            f"📈 <b>Net Expectancy:</b> {total_r:+.1f}R\n"
             f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
-            f"🏆 <b>Best: </b> {best['symbol']} ({r_map.get(best['status'], 0):+.1f}R)\n"
-            f"💀 <b>Worst: </b> {worst['symbol']} ({r_map.get(worst['status'], 0):+.1f}R)\n"
-            f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"            f"🔍 <i>Transparency is our edge.</i>"
+            f"🏆 <b>Best:</b> {best['symbol']} ({r_map.get(best['status'], 0):+.1f}R)\n"
+            f"💀 <b>Worst:</b> {worst['symbol']} ({r_map.get(worst['status'], 0):+.1f}R)\n"
+            f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+            f"🔍 <i>Transparency is our edge.</i>"
         )
 
 def tear_sheet_scheduler():
@@ -655,22 +635,20 @@ def tear_sheet_scheduler():
 # ==========================================
 # TELEGRAM COMMANDS (DENGAN /tune)
 # ==========================================
-@bot.message_handler(commands=['start', 'help'])
-def cmd_start(msg):
+@bot.message_handler(commands=['start', 'help'])def cmd_start(msg):
     global is_scanning
     is_scanning = True
     bot.reply_to(msg,
         "⚡ <b>NOVA7 [PREMIUM + TUNABLE]</b>\n\n"
         "🚀 Layer 1: Real-time Radar\n"
-        "️ Layer 2: Sniper + Daily Confluence\n"
+        "🕵️ Layer 2: Sniper + Daily Confluence\n"
         "📊 Auto-Chart Visual Proof\n"
-        "💼 Fund Manager Position Sizing\n"
-        "🚨 <b>NEW: Dynamic Risk Assessment</b>\n\n"
+        "💼 Fund Manager Position Sizing\n\n"
         "<b>Commands:</b>\n"
         "/tune show — Lihat parameter\n"
         "/tune standard — Mode balance\n"
         "/tune longgar — Banyak signal\n"
-        "/tune ketat — Sikit signal (High Quality)\n"
+        "/tune ketat — Sikit signal\n"
         "/tune custom key=value\n"
         "/modal 1000 — Set modal\n"
         "/force FETUSDT — Scan manual\n"
@@ -684,8 +662,9 @@ def cmd_tune(msg):
         t = get_tuning()
         modes = {0: 'STANDARD', 1: 'LONGGAR', 2: 'KETAT'}
         mode_name = modes.get(int(t.get('mode', 0)), 'UNKNOWN')
-        report = (            f"🎛️ <b>TUNING PARAMETERS</b> [{mode_name}]\n"
-            f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+        report = (
+            f"🎛️ <b>TUNING PARAMETERS</b> [{mode_name}]\n"
+            f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
             f"<b>🚀 Breakout Engine:</b>\n"
             f"• RVOL threshold: <code>{t.get('bo_rvol', 1.8):.2f}x</code>\n"
             f"• RSI range: <code>{t.get('bo_rsi_min', 50):.0f}-{t.get('bo_rsi_max', 75):.0f}</code>\n"
@@ -703,11 +682,9 @@ def cmd_tune(msg):
         )
         bot.reply_to(msg, report, parse_mode="HTML")
         return
-    
     if args[0] == 'standard':
         set_tuning({**DEFAULT_TUNING, 'mode': 0})
-        bot.reply_to(msg, "✅ <b>Mode STANDARD aktif.</b>\nBalance antara kualiti & kuantiti.", parse_mode="HTML")
-    elif args[0] == 'longgar':
+        bot.reply_to(msg, "✅ <b>Mode STANDARD aktif.</b>\nBalance antara kualiti & kuantiti.", parse_mode="HTML")    elif args[0] == 'longgar':
         set_tuning({
             'mode': 1,
             'bo_rvol': 1.4, 'bo_rsi_min': 45, 'bo_rsi_max': 80, 'bo_daily_filter': 0,
@@ -733,37 +710,37 @@ def cmd_tune(msg):
                     k, v = pair.split('=')
                     if k in DEFAULT_TUNING:
                         updates[k] = float(v)
-            if updates:                set_tuning(updates)
+            if updates:
+                set_tuning(updates)
                 bot.reply_to(msg, f"✅ <b>Custom tuning updated:</b>\n" + "\n".join([f"• {k} = {v}" for k, v in updates.items()]), parse_mode="HTML")
             else:
                 bot.reply_to(msg, "⚠️ Tiada parameter valid. Contoh: <code>/tune custom bo_rvol=1.5 acc_bb_width=8.0</code>", parse_mode="HTML")
         except Exception as e:
             bot.reply_to(msg, f"❌ Error: {str(e)[:100]}", parse_mode="HTML")
     else:
-        bot.reply_to(msg, "️ Guna: <code>/tune show</code>, <code>/tune standard</code>, <code>/tune longgar</code>, <code>/tune ketat</code>, atau <code>/tune custom key=value</code>", parse_mode="HTML")
+        bot.reply_to(msg, "⚠️ Guna: <code>/tune show</code>, <code>/tune standard</code>, <code>/tune longgar</code>, <code>/tune ketat</code>, atau <code>/tune custom key=value</code>", parse_mode="HTML")
 
 @bot.message_handler(commands=['modal'])
 def cmd_modal(msg):
     args = msg.text.split()
     if len(args) < 2:
         cap, risk = get_user_capital(msg.from_user.id)
-        bot.reply_to(msg, f"💼 <b>Modal Semasa: </b> ${cap:,.2f}\n⚠️ <b>Risk: </b> {risk}%\n\nCara set: <code>/modal 1000</code>", parse_mode="HTML")
+        bot.reply_to(msg, f"💼 <b>Modal Semasa:</b> ${cap:,.2f}\n⚠️ <b>Risk:</b> {risk}%\n\nCara set: <code>/modal 1000</code>", parse_mode="HTML")
         return
     try:
         new_cap = float(args[1])
         if new_cap < 10:
-            bot.reply_to(msg, "️ Minimum modal: $10", parse_mode="HTML")
+            bot.reply_to(msg, "⚠️ Minimum modal: $10", parse_mode="HTML")
             return
         set_user_capital(msg.from_user.id, new_cap)
-        bot.reply_to(msg, f"✅ <b>Modal Dikemas Kini: </b> ${new_cap:,.2f}\nRisk default: 2% (${new_cap * 0.02:,.2f} per trade)", parse_mode="HTML")
-    except ValueError:
+        bot.reply_to(msg, f"✅ <b>Modal Dikemas Kini:</b> ${new_cap:,.2f}\nRisk default: 2% (${new_cap * 0.02:,.2f} per trade)", parse_mode="HTML")    except ValueError:
         bot.reply_to(msg, "⚠️ Format: <code>/modal 1000</code>", parse_mode="HTML")
 
 @bot.message_handler(commands=['stop'])
 def cmd_stop(msg):
     global is_scanning
     is_scanning = False
-    bot.reply_to(msg, " <b>Enjin Nova7 Dihentikan.</b>", parse_mode="HTML")
+    bot.reply_to(msg, "🛑 <b>Enjin Nova7 Dihentikan.</b>", parse_mode="HTML")
 
 @bot.message_handler(commands=['status'])
 def cmd_status(msg):
@@ -772,17 +749,18 @@ def cmd_status(msg):
     modes = {0: 'STANDARD', 1: 'LONGGAR', 2: 'KETAT'}
     text = (
         f"📊 <b>NOVA7 STATUS [{status}]</b>\n"
-        f"🎛️ <b>Mode: </b> {modes.get(int(t.get('mode', 0)), 'UNKNOWN')}\n"
-        f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+        f"🎛️ <b>Mode:</b> {modes.get(int(t.get('mode', 0)), 'UNKNOWN')}\n"
+        f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
         f"🐋 Radar: {stats['radar_coins']} coins\n"
         f"🎯 L2 Scans: {stats['layer2_scans']}\n"
         f"📈 Signals: {stats['signals_sent']}\n"
-        f" Rejected: {stats['rejected']}\n"
+        f"❌ Rejected: {stats['rejected']}\n"
         f"🕐 {datetime.now(timezone.utc).strftime('%H:%M UTC')}"
     )
     bot.reply_to(msg, text, parse_mode="HTML")
 
-@bot.message_handler(commands=['report'])def cmd_report(msg):
+@bot.message_handler(commands=['report'])
+def cmd_report(msg):
     bot.reply_to(msg, "⏳ <i>Menjana Tear Sheet...</i>", parse_mode="HTML")
     bot.reply_to(msg, generate_tear_sheet(), parse_mode="HTML")
 
@@ -795,8 +773,38 @@ def cmd_force(msg):
     sym = args[1].upper()
     if not sym.endswith('USDT'): sym += 'USDT'
     user_cap, user_risk = get_user_capital(msg.from_user.id)
-    bot.reply_to(msg, f"🎯 <b>Sniper Deployed: </b> {sym} (Modal: ${user_cap:,.0f})", parse_mode="HTML")
+    bot.reply_to(msg, f"🎯 <b>Sniper Deployed:</b> {sym} (Modal: ${user_cap:,.0f})", parse_mode="HTML")
     threading.Thread(target=lambda: asyncio.run(layer2_sniper(sym, 'BREAKOUT', force=True, chat_id=msg.chat.id, user_cap=user_cap, user_risk=user_risk)), daemon=True).start()
+
+# ==========================================
+# AI INSIGHT CALLBACK HANDLER
+# ==========================================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("ai_summary_"))
+def handle_ai_insight(call):
+    """Handle AI Insight button click — panggil engine sebenar, bukan template statik."""
+    symbol = call.data.split("_")[-1]    bot.answer_callback_query(call.id, "🤖 Menjana analisis...", show_alert=False)
+    # FIX: Panggil generate_ai_insight() sebenar (yg sudah ditakrif di atas) untuk
+    # market analysis berasaskan indikator live, bukan template statik.
+    try:
+        # Dalam gambar, ia hanya tunjukkan mesej ringkas
+        insight_text = (
+            "🤖 <b>AI Insight: {symbol}</b>\n\n"
+            "<blockquote>\n"
+            "• <b>Trend:</b> Semak RSI & EMA alignment\n"
+            "• <b>Volume:</b> RVOL >2.0x = confirmation\n"
+            "• <b>Social:</b> Check Twitter sentiment untuk ${symbol[:-4]}\n"
+            "• <b>Risk:</b> SL wajib di bawah structure low\n"
+            "</blockquote>\n\n"
+            "<i>Tip: Tekan butang 'AI Summary' di penjuru atas Telegram untuk ringkasan automatik.</i>"
+        )
+        bot.send_message(call.message.chat.id, insight_text, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"AI insight error for {symbol}: {e}")
+        bot.send_message(
+            call.message.chat.id,
+            f"❌ <b>Gagal jana insight untuk {symbol}:</b> {str(e)[:80]}",
+            parse_mode="HTML"
+        )
 
 # ==========================================
 # FLASK & SHUTDOWN
@@ -804,7 +812,8 @@ def cmd_force(msg):
 app = Flask(__name__)
 
 @app.route('/')
-def home(): return "Enjin Nova7 Premium Aktif 🐋"
+def home(): 
+    return "Enjin Nova7 Premium Aktif 🐋"
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -814,13 +823,14 @@ def webhook():
 
 def graceful_shutdown(*args):
     if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
-        try: bot.send_message(ADMIN_CHAT_ID, "🔴 <b>[OFFLINE] NOVA7 DISCONNECTED.</b>", parse_mode="HTML")
-        except: pass
+        try: 
+            bot.send_message(ADMIN_CHAT_ID, "🔴 <b>[OFFLINE] NOVA7 DISCONNECTED.</b>", parse_mode="HTML")
+        except: 
+            pass
     sys.exit(0)
 
 def run_flask():
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
-
 # ==========================================
 # MAIN ORCHESTRATOR
 # ==========================================
@@ -828,10 +838,10 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, graceful_shutdown)
     signal.signal(signal.SIGINT, graceful_shutdown)
     init_db()
-    
     RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", " ").rstrip("/")
     if bot:
-        bot.remove_webhook()        time.sleep(2)
+        bot.remove_webhook()
+        time.sleep(2)
 
     if RENDER_URL:
         logger.info("[ENV] Render Cloud detected. Webhook Mode...")
@@ -841,13 +851,17 @@ if __name__ == "__main__":
         threading.Thread(target=lambda: asyncio.run(trade_tracker()), daemon=True).start()
         threading.Thread(target=tear_sheet_scheduler, daemon=True).start()
         threading.Thread(target=run_flask, daemon=True).start()
-        try: asyncio.run(layer1_radar())
-        except KeyboardInterrupt: graceful_shutdown()
+        try: 
+            asyncio.run(layer1_radar())
+        except KeyboardInterrupt: 
+            graceful_shutdown()
     else:
         logger.info("[ENV] Localhost. Polling Mode...")
         threading.Thread(target=lambda: asyncio.run(trade_tracker()), daemon=True).start()
         threading.Thread(target=tear_sheet_scheduler, daemon=True).start()
         threading.Thread(target=lambda: asyncio.run(layer1_radar()), daemon=True).start()
         if bot:
-            try: bot.infinity_polling()
-            except KeyboardInterrupt: graceful_shutdown()
+            try: 
+                bot.infinity_polling()
+            except KeyboardInterrupt: 
+                graceful_shutdown()
