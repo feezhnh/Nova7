@@ -60,7 +60,7 @@ DEFAULT_TUNING = {
     'bo_rsi_max': 75,
     'bo_daily_filter': 1,  # 1=on, 0=off
     # Accumulation params
-    'acc_bb_width': 24.0,  # FIX: dikemaskini dari 6.0 → 24.0 untuk match standard BB formula (4σ/SMA)
+    'acc_bb_width': 6.0,
     'acc_rvol': 2.0,
     'acc_rsi_max': 45,
     # Radar params
@@ -164,12 +164,9 @@ class IncrementalIndicators:
         if len(closes) < 51: 
             return False
         self.closes, self.highs, self.lows, self.volumes = closes[-100:], highs[-100:], lows[-100:], volumes[-100:]
-        # FIX: EMA initialization — each EMA must iterate from its own seed index
-        self.ema21 = sum(closes[:21]) / 21
-        for p in closes[21:]:
-            self.ema21 = p * self.k21 + self.ema21 * (1 - self.k21)
-        self.ema50 = sum(closes[:50]) / 50
+        self.ema21, self.ema50 = sum(closes[:21]) / 21, sum(closes[:50]) / 50
         for p in closes[50:]:
+            self.ema21 = p * self.k21 + self.ema21 * (1 - self.k21)
             self.ema50 = p * self.k50 + self.ema50 * (1 - self.k50)
         deltas = [closes[i] - closes[i - 1] for i in range(1, 15)]
         self.avg_gain = sum(d for d in deltas if d > 0) / 14
@@ -197,9 +194,7 @@ class IncrementalIndicators:
         recent = self.closes[-20:]
         sma = sum(recent) / 20
         std = (sum((p - sma) ** 2 for p in recent) / 20) ** 0.5
-        # FIX: Standard Bollinger Band Width = (Upper - Lower) / Middle * 100
-        # = (SMA + 2σ - (SMA - 2σ)) / SMA * 100 = (4σ / SMA) * 100
-        return (4 * std / sma) * 100 if sma > 0 else 10.0
+        return (std / sma) * 100 if sma > 0 else 10.0
 
     def get_recent_high(self):
         return max(self.highs[-21:-1]) if len(self.highs) >= 21 else 0
@@ -223,9 +218,7 @@ class BreakoutHunter:
             f"RSI {rsi_min}-{rsi_max} [{ind.rsi:.1f}]": rsi_min < ind.rsi < rsi_max
         }
         if all(conditions.values()):
-            # FIX: SL dari 20-candle structure low (robust), bukan 5-candle (terlalu pendek untuk 1H)
-            structure_low = min(ind.lows[-20:])
-            sig = {'type': 'BREAKOUT', 'rvol': rvol, 'break_level': recent_high, 'low': structure_low}
+            sig = {'type': 'BREAKOUT', 'rvol': rvol, 'break_level': recent_high, 'low': min(ind.lows[-5:])}
             return sig, conditions
         return None, conditions  # FIX: conditi ons -> conditions
 
@@ -244,15 +237,49 @@ class AccumulationDetective:
             f"RSI < {rsi_max} [{ind.rsi:.1f}]": ind.rsi < rsi_max
         }
         if all(conditions.values()):
-            # FIX: SL dari 20-candle structure low (robust)
-            structure_low = min(ind.lows[-20:])
-            sig = {'type': 'ACCUMULATION', 'rvol': rvol, 'bb': bb, 'low': structure_low}
+            sig = {'type': 'ACCUMULATION', 'rvol': rvol, 'bb': bb, 'low': min(ind.lows[-5:])}
             return sig, conditions
         return None, conditions
 
 # ==========================================
-# AUTO-CHART (VISUAL PROOF) — definisi tunggal di bawah dalam seksyen PREMIUM FEATURE 1
+# AUTO-CHART (VISUAL PROOF)
 # ==========================================
+def generate_chart_image(symbol, closes, highs, lows, volumes, ema21, ema50, sig, sl, tp1, tp2, tp3):
+    try:
+        n = min(60, len(closes))
+        df = pd.DataFrame({
+            'Open': [closes[i - 1] if i > 0 else closes[i] for i in range(len(closes) - n, len(closes))],
+            'High': highs[-n:],
+            'Low': lows[-n:],
+            'Close': closes[-n:],
+            'Volume': volumes[-n:]
+        }, index=pd.date_range(end=datetime.now(), periods=n, freq='H'))
+        addplots = []
+        if ema21: 
+            addplots.append(mpf.make_addplot([ema21] * n, color='#00BFFF', width=1.2))
+        if ema50: 
+            addplots.append(mpf.make_addplot([ema50] * n, color='#FFA500', width=1.2))
+
+        hlines = dict(hlines=[sl, tp1, tp2, tp3],
+                      colors=['red', 'lime', 'lime', 'gold'],
+                      linestyle=['-', '--', '--', '--'],
+                      linewidths=[1.2, 1, 1, 1])
+
+        mc = mpf.make_marketcolors(up='#26A69A', down='#EF5350', edge='inherit', wick='inherit', volume='in')
+        style = mpf.make_mpf_style(marketcolors=mc, gridstyle='-', gridcolor='#1E1E1E',
+                                    facecolor='#0E0E0E', edgecolor='#0E0E0E', figcolor='#0E0E0E',
+                                    rc={'axes.labelcolor': 'white', 'xtick.color': 'white', 'ytick.color': 'white'})
+
+        buf = io.BytesIO()
+        fig, axes = mpf.plot(df, type='candle', style=style, addplot=addplots, hlines=hlines,
+                              volume=True, figsize=(10, 6), title=f"\n{symbol} | Nova7 Signal", returnfig=True)
+        fig.savefig(buf, format='png', dpi=100, bbox_inches='tight', facecolor='#0E0E0E')
+        plt.close(fig)
+        buf.seek(0)
+        return buf
+    except Exception as e:
+        logger.error(f"Chart error: {e}")
+        return None
 
 # ==========================================
 # DAILY CONFLUENCE (TRAP KILLER)
@@ -453,67 +480,44 @@ def spot_post_mortem(symbol):
 # ==========================================
 def check_social_sentiment(symbol, base_name=None):
     """
-    Check news sentiment & volume untuk symbol menggunakan CryptoPanic public API.
-    Tiada API key required untuk free tier. Menggantikan Twitter scraper yang
-    tidak berfungsi sejak X memerlukan auth (2023+).
+    Check Twitter sentiment & volume untuk symbol.
+    Guna public search - tiada API key required.
     """
     try:
         base = base_name if base_name else symbol[:-4]
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Nova7-Bot/1.0)'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
-        # CryptoPanic public endpoint — free, no key needed for basic queries
-        api_url = f"https://cryptopanic.com/api/v1/posts/?currencies={base}&public=true"
-        res = requests.get(api_url, headers=headers, timeout=10)
+        # Search untuk cashtag ($SYMBOL)
+        search_url = f"https://x.com/search?q=%24{base}&f=live"
+        res = requests.get(search_url, headers=headers, timeout=10)
 
         if res.status_code != 200:
             return {
                 'volume': 0,
-                'volume_level': 'LOW',
                 'sentiment': 'NEUTRAL',
                 'score': 50,
-                'positive': 0,
-                'negative': 0,
-                'error': f'API status {res.status_code}'
+                'error': 'Fetch failed'
             }
 
-        data = res.json()
-        posts = data.get('results', [])
+        # Kira approximate volume dari response
+        # (Ini estimation - Twitter limit public data)
+        html_content = res.text.lower()
 
-        if not posts:
-            return {
-                'volume': 0,
-                'volume_level': 'LOW',
-                'sentiment': 'NEUTRAL',
-                'score': 50,
-                'positive': 0,
-                'negative': 0,
-                'error': None
-            }
+        # Kira mention density
+        mention_count = html_content.count(f'${base.lower()}')
 
-        # CryptoPanic provides vote signals per post (positive/negative/important/etc)
-        pos_count = 0
-        neg_count = 0
-        for post in posts:
-            votes = post.get('votes', {}) or {}
-            pos_count += int(votes.get('positive', 0) or 0)
-            pos_count += int(votes.get('important', 0) or 0)
-            neg_count += int(votes.get('negative', 0) or 0)
-            neg_count += int(votes.get('toxic', 0) or 0)
+        # Sentiment keywords
+        positive_keywords = ['moon', 'bullish', 'pump', 'buy', 'long', 'green', 'up', 'gain', 'profit', 'rocket']
+        negative_keywords = ['bearish', 'dump', 'sell', 'short', 'red', 'down', 'loss', 'crash', 'bleed']
 
-            # Fallback: scan title for sentiment keywords if votes are absent
-            title = (post.get('title', '') or '').lower()
-            positive_keywords = ['surge', 'rally', 'bullish', 'soar', 'breakout', 'gain', 'rocket', 'pump']
-            negative_keywords = ['crash', 'dump', 'bearish', 'plunge', 'fall', 'loss', 'hack', 'exploit']
-            pos_count += sum(1 for kw in positive_keywords if kw in title)
-            neg_count += sum(1 for kw in negative_keywords if kw in title)
-
-        mention_count = len(posts)
+        pos_count = sum(1 for kw in positive_keywords if kw in html_content)  # FIX: pos_c ount -> pos_count
+        neg_count = sum(1 for kw in negative_keywords if kw in html_content)
 
         # Kira sentiment score
         total = pos_count + neg_count
         if total == 0:
-            sentiment_score = 50
+            sentiment_score = 50  # Neutral
             sentiment_label = 'NEUTRAL'
         else:
             sentiment_score = (pos_count / total) * 100
@@ -524,10 +528,10 @@ def check_social_sentiment(symbol, base_name=None):
             else:
                 sentiment_label = 'NEUTRAL'
 
-        # Volume classification berdasarkan bilangan news posts
-        if mention_count >= 15:
+        # Volume classification
+        if mention_count >= 20:
             volume_level = 'HIGH'
-        elif mention_count >= 5:
+        elif mention_count >= 10:
             volume_level = 'MEDIUM'
         else:
             volume_level = 'LOW'
@@ -546,11 +550,8 @@ def check_social_sentiment(symbol, base_name=None):
         logger.warning(f"Social sentiment error for {symbol}: {e}")
         return {
             'volume': 0,
-            'volume_level': 'LOW',
             'sentiment': 'UNKNOWN',
             'score': 50,
-            'positive': 0,
-            'negative': 0,
             'error': str(e)[:50]
         }
 
@@ -561,24 +562,7 @@ latest_prices = {}
 radar_history = {}
 layer2_queue = set()
 stats = {'radar_coins': 0, 'layer2_scans': 0, 'signals_sent': 0, 'rejected': 0}
-stats_lock = threading.Lock()  # FIX: lock untuk thread-safe stats updates
-queue_lock = threading.Lock()  # FIX: lock untuk layer2_queue (atomic check+add)
 activity_log = []  # For pulse display
-
-def bump_stat(key, n=1):
-    """Thread-safe increment untuk stats dict."""
-    with stats_lock:
-        stats[key] = stats.get(key, 0) + n
-
-def set_stat(key, value):
-    """Thread-safe set untuk stats dict."""
-    with stats_lock:
-        stats[key] = value
-
-def get_stats_snapshot():
-    """Ambil snapshot stats tanpa race."""
-    with stats_lock:
-        return dict(stats)
 
 def log_activity(msg):
     """Simpan activity log untuk dipaparkan dalam pulse."""
@@ -611,8 +595,7 @@ async def layer1_radar():
 
                     # ACTIVITY PULSE setiap 5 minit
                     if now - last_pulse >= 300:
-                        snap = get_stats_snapshot()  # FIX: thread-safe read
-                        logger.info(f"💓 [PULSE] Radar: {pulse_stats['seen']} coins | Promoted: {pulse_stats['promoted']} | Signals: {snap['signals_sent']} | Rejected: {snap['rejected']}")
+                        logger.info(f"💓 [PULSE] Radar: {pulse_stats['seen']} coins | Promoted: {pulse_stats['promoted']} | Signals: {stats['signals_sent']} | Rejected: {stats['rejected']}")
                         if activity_log:
                             logger.info(f"📋 [RECENT] {' | '.join(activity_log[-5:])}")
                         last_pulse = now
@@ -641,40 +624,27 @@ async def layer1_radar():
                         if len(radar_history[sym]) > 15: 
                             radar_history[sym].pop(0)
 
-                        # FIX: atomic check+add untuk elak race condition
-                        promote_breakout = False
-                        if len(radar_history[sym]) >= 6:
+                        if len(radar_history[sym]) >= 6 and sym not in layer2_queue:
                             past_c = radar_history[sym][-6]['c']
                             if past_c > 0:
                                 change = ((c - past_c) / past_c) * 100
                                 momentum = t.get('radar_momentum', 2.5)
                                 min_vol = t.get('radar_min_vol', 15_000_000)
                                 if change >= momentum and q > min_vol:
-                                    with queue_lock:
-                                        if sym not in layer2_queue:
-                                            layer2_queue.add(sym)
-                                            promote_breakout = True
-                                    if promote_breakout:
-                                        pulse_stats['promoted'] += 1
-                                        log_activity(f"{sym} ↑{change:.1f}% → Layer 2")
-                                        asyncio.create_task(layer2_sniper(sym, 'BREAKOUT'))
+                                    layer2_queue.add(sym)
+                                    pulse_stats['promoted'] += 1
+                                    log_activity(f"{sym} ↑{change:.1f}% → Layer 2")
+                                    asyncio.create_task(layer2_sniper(sym, 'BREAKOUT'))
 
                     if now - last_scheduled >= 7200:
                         last_scheduled = now
                         sorted_syms = sorted(latest_prices.keys(), key=lambda s: latest_prices[s]['q'], reverse=True)
                         for s in sorted_syms[:100]:
-                            # FIX: atomic check+add untuk Accumulation queue juga
-                            if check_cooldown(s):
-                                continue
-                            queued = False
-                            with queue_lock:
-                                if s not in layer2_queue:
-                                    layer2_queue.add(s)
-                                    queued = True
-                            if queued:
+                            if s not in layer2_queue and not check_cooldown(s):
+                                layer2_queue.add(s)
                                 asyncio.create_task(layer2_sniper(s, 'ACCUMULATION'))
 
-                    set_stat('radar_coins', len(latest_prices))
+                    stats['radar_coins'] = len(latest_prices)
         except Exception as e:
             logger.error(f"❌ [RADAR] Disconnected: {e}. Reconnecting...")
             await asyncio.sleep(5)
@@ -730,7 +700,7 @@ async def layer2_sniper(symbol, scan_type, force=False, chat_id=None, user_cap=1
             return
         async with aiohttp.ClientSession() as session:
             url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=100"
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            async with session.get(url, timeout=10) as resp:
                 data = await resp.json()
                 closes = [float(d[4]) for d in data]
                 highs = [float(d[2]) for d in data]
@@ -772,21 +742,21 @@ async def layer2_sniper(symbol, scan_type, force=False, chat_id=None, user_cap=1
 
                     if not daily_ok and not force:
                         log_activity(f"{symbol} ❌ Daily Filter: {daily_note}")
-                        bump_stat('rejected')
+                        stats['rejected'] += 1
                         if chat_id and bot:
                             bot.send_message(chat_id, f"🚫 <b>{symbol}</b> ditolak: {daily_note}", parse_mode="HTML")
                         return
 
                     log_activity(f"{symbol} ✅ VALID ({scan_type}) → Dispatching")
                     dispatch_signal(symbol, closes[-1], sig, ind, scan_type, chart_buf, daily_note, user_cap, user_risk)
-                    bump_stat('signals_sent')
+                    stats['signals_sent'] += 1
                 else:
                     # Log kenapa gagal (ringkas)
                     failed = [k for k, v in conditions.items() if not v]
                     if failed:
                         main_reason = failed[0].split('[')[0].strip()[:40]
                         log_activity(f"{symbol} ❌ {main_reason}")
-                        bump_stat('rejected')
+                        stats['rejected'] += 1
 
                     if chat_id and bot and conditions:
                         report = f"🔍 <b>Diagnostic {symbol}</b>\n❌ Setup TIDAK VALID.\n\n"
@@ -794,12 +764,11 @@ async def layer2_sniper(symbol, scan_type, force=False, chat_id=None, user_cap=1
                             report += f"{'✅' if passed else '❌'} {condition}\n"
                         bot.send_message(chat_id, report, parse_mode="HTML")
 
-                bump_stat('layer2_scans')
+                stats['layer2_scans'] += 1
     except Exception as e:
         logger.error(f"Sniper error {symbol}: {e}")
     finally:
-        with queue_lock:
-            layer2_queue.discard(symbol)
+        layer2_queue.discard(symbol)
 
 # ==========================================
 # TRADE TRACKER
@@ -940,7 +909,7 @@ def cmd_tune(msg):
         set_tuning({
             'mode': 1,
             'bo_rvol': 1.4, 'bo_rsi_min': 45, 'bo_rsi_max': 80, 'bo_daily_filter': 0,
-            'acc_bb_width': 40.0, 'acc_rvol': 1.6, 'acc_rsi_max': 55,  # FIX: 10.0 → 40.0 (standard BB)
+            'acc_bb_width': 10.0, 'acc_rvol': 1.6, 'acc_rsi_max': 55,  # FIX: a cc_rvol -> acc_rvol
             'radar_momentum': 1.8, 'radar_min_vol': 8_000_000,
             'cd_breakout': 12, 'cd_accumulation': 24
         })
@@ -949,7 +918,7 @@ def cmd_tune(msg):
         set_tuning({
             'mode': 2,
             'bo_rvol': 2.2, 'bo_rsi_min': 55, 'bo_rsi_max': 70, 'bo_daily_filter': 1,
-            'acc_bb_width': 16.0, 'acc_rvol': 2.5, 'acc_rsi_max': 40,  # FIX: 4.0 → 16.0 (standard BB)
+            'acc_bb_width': 4.0, 'acc_rvol': 2.5, 'acc_rsi_max': 40,  # FIX: acc_ rvol -> acc_rvol
             'radar_momentum': 3.0, 'radar_min_vol': 20_000_000,
             'cd_breakout': 48, 'cd_accumulation': 72
         })
@@ -999,16 +968,15 @@ def cmd_stop(msg):
 def cmd_status(msg):
     status = "🟢 AKTIF" if is_scanning else "🔴 STANDBY"
     t = get_tuning()
-    s = get_stats_snapshot()  # FIX: thread-safe snapshot
     modes = {0: 'STANDARD', 1: 'LONGGAR', 2: 'KETAT'}
     text = (
         f"📊 <b>NOVA7 STATUS [{status}]</b>\n"
         f"🎛️ <b>Mode:</b> {modes.get(int(t.get('mode', 0)), 'UNKNOWN')}\n"
         f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
-        f"🐋 Radar: {s['radar_coins']} coins\n"
-        f"🎯 L2 Scans: {s['layer2_scans']}\n"
-        f"📈 Signals: {s['signals_sent']}\n"
-        f"❌ Rejected: {s['rejected']}\n"
+        f"🐋 Radar: {stats['radar_coins']} coins\n"
+        f"🎯 L2 Scans: {stats['layer2_scans']}\n"
+        f"📈 Signals: {stats['signals_sent']}\n"
+        f"❌ Rejected: {stats['rejected']}\n"
         f"🕐 {datetime.now(timezone.utc).strftime('%H:%M UTC')}"
     )
     bot.reply_to(msg, text, parse_mode="HTML")
@@ -1036,22 +1004,24 @@ def cmd_force(msg):
 # ==========================================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("ai_summary_"))
 def handle_ai_insight(call):
-    """Handle AI Insight button click — panggil engine sebenar, bukan template statik."""
+    """Handle AI Insight button click."""
     symbol = call.data.split("_")[-1]
-    bot.answer_callback_query(call.id, "🤖 Menjana analisis...", show_alert=False)
+    # Telegram AI Summary adalah native feature - kita just beri confirmation
+    bot.answer_callback_query(call.id, "🤖 AI Summary sedang dijana...", show_alert=False)
 
-    # FIX: Panggil generate_ai_insight() sebenar (yg sudah ditakrif di atas) untuk
-    # market analysis berasaskan indikator live, bukan template statik.
-    try:
-        insight_text = generate_ai_insight(symbol)
-        bot.send_message(call.message.chat.id, insight_text, parse_mode="HTML")
-    except Exception as e:
-        logger.error(f"AI insight error for {symbol}: {e}")
-        bot.send_message(
-            call.message.chat.id,
-            f"❌ <b>Gagal jana insight untuk {symbol}:</b> {str(e)[:80]}",
-            parse_mode="HTML"
-        )
+    # Hantar mesej ringkas yang akan trigger Telegram AI Summary
+    ai_text = (
+        f"🤖 <b>AI Insight: {symbol}</b>\n\n"
+        f"<blockquote>"
+        f"• <b>Trend:</b> Semak RSI & EMA alignment\n"
+        f"• <b>Volume:</b> RVOL >2.0x = confirmation\n"
+        f"• <b>Social:</b> Check Twitter sentiment untuk ${symbol[:-4]}\n"
+        f"• <b>Risk:</b> SL wajib di bawah structure low\n"
+        f"</blockquote>\n\n"
+        f"<i>Tip: Tekan butang 'AI Summary' di penjuru atas Telegram untuk ringkasan automatik.</i>"
+    )
+
+    bot.send_message(call.message.chat.id, ai_text, parse_mode="HTML")
 
 # ==========================================
 # FLASK & SHUTDOWN
