@@ -83,13 +83,6 @@ def init_db():
             (user_id INTEGER PRIMARY KEY, capital REAL, risk_pct REAL, updated REAL)''')
         conn.execute('''CREATE TABLE IF NOT EXISTS tuning_params
             (key TEXT PRIMARY KEY, value REAL)''')
-        # NEW: Audit log untuk post-trade analysis
-        conn.execute('''CREATE TABLE IF NOT EXISTS audit_log
-            (msg_id INTEGER PRIMARY KEY, symbol TEXT, engine TEXT,
-            entry REAL, sl REAL, exit_status TEXT, exit_price REAL,
-            btc_daily_trend TEXT, btc_4h_trend TEXT, btc_24h_change REAL,
-            price_1h_after REAL, price_4h_after REAL, price_24h_after REAL,
-            signal_time REAL, exit_time REAL)''')
         # Init default tuning jika belum ada
         for k, v in DEFAULT_TUNING.items():
             conn.execute(
@@ -156,163 +149,28 @@ def get_user_capital(user_id):
     return 1000.0, 2.0
 
 # ==========================================
-# AUDIT LOGGER (POST-TRADE OUTCOME TRACKING)
-# ==========================================
-def audit_log_signal(msg_id, symbol, engine, entry, sl, btc_regime):
-    """Log signal dispatch dengan BTC context untuk analysis later."""
-    try:
-        with db_lock, sqlite3.connect(DB_NAME) as conn:
-            conn.execute('''INSERT OR REPLACE INTO audit_log
-                (msg_id, symbol, engine, entry, sl, exit_status,
-                 btc_daily_trend, btc_4h_trend, btc_24h_change, signal_time)
-                VALUES (?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?)''',
-                (msg_id, symbol, engine, entry, sl,
-                 btc_regime.get('daily_trend', 'UNKNOWN'),
-                 btc_regime.get('h4_trend', 'UNKNOWN'),
-                 btc_regime.get('h24_change', 0),
-                 time.time()))
-    except Exception as e:
-        logger.warning(f"Audit log error: {e}")
-
-def audit_update_exit(msg_id, status, exit_price):
-    """Update audit dengan exit info bila SL/TP hit."""
-    try:
-        with db_lock, sqlite3.connect(DB_NAME) as conn:
-            conn.execute('''UPDATE audit_log SET exit_status=?, exit_price=?, exit_time=?
-                            WHERE msg_id=?''',
-                (status, exit_price, time.time(), msg_id))
-    except Exception as e:
-        logger.warning(f"Audit exit update error: {e}")
-
-def audit_track_post_sl(msg_id, symbol):
-    """
-    Track price 1H, 4H, 24H selepas SL hit.
-    Run sebagai background task. Critical untuk diagnose:
-    - Sambung turun = trend filter masalah
-    - Bounce balik = SL terlalu ketat
-    """
-    async def _tracker():
-        _ALLOWED_COLS = {'price_1h_after', 'price_4h_after', 'price_24h_after'}
-        intervals = [(3600, 'price_1h_after'), (14400, 'price_4h_after'), (86400, 'price_24h_after')]
-        for delay, col in intervals:
-            await asyncio.sleep(delay)
-            # FIX: Whitelist check — elak f-string dalam SQL walaupun nilai dalaman
-            if col not in _ALLOWED_COLS:
-                logger.error(f"Audit tracker: invalid column name '{col}' — skipped")
-                continue
-            try:
-                async with aiohttp.ClientSession() as session:
-                    url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                        data = await resp.json()
-                        price = float(data.get('price', 0))
-                        with db_lock, sqlite3.connect(DB_NAME) as conn:
-                            conn.execute(f"UPDATE audit_log SET {col}=? WHERE msg_id=?",
-                                         (price, msg_id))
-            except Exception as e:
-                logger.warning(f"Audit track {col} error for {symbol}: {e}")
-    
-    try:
-        # FIX: get_running_loop() adalah betul untuk Python 3.10+
-        # get_event_loop() deprecated dan akan raise RuntimeError dalam Python 3.12+
-        asyncio.get_running_loop().create_task(_tracker())
-    except RuntimeError:
-        # Tiada running loop (dipanggil dari thread lain) — spawn thread baru
-        threading.Thread(target=lambda: asyncio.run(_tracker()), daemon=True).start()
-
-def generate_audit_report():
-    """Generate diagnostic report dari audit_log table."""
-    with db_lock, sqlite3.connect(DB_NAME) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute('''SELECT * FROM audit_log 
-                               WHERE exit_status IS NOT NULL 
-                               AND exit_status != 'PENDING'
-                               ORDER BY signal_time DESC LIMIT 50''').fetchall()
-    
-    if not rows:
-        return ("📊 <b>AUDIT REPORT</b>\n\n"
-                "<i>Tiada data audit lagi. Hantar beberapa signal dahulu, "
-                "kemudian tunggu SL/TP untuk dapatkan post-trade tracking.</i>")
-    
-    total = len(rows)
-    wins = sum(1 for r in rows if r['exit_status'] in ('TP1_HIT', 'TP2_HIT', 'COMPLETED'))
-    losses = sum(1 for r in rows if r['exit_status'] == 'STOP_LOSS')
-    
-    # Breakdown by BTC regime
-    by_regime = {}
-    for r in rows:
-        regime = f"{r['btc_daily_trend']}/{r['btc_4h_trend']}"
-        if regime not in by_regime:
-            by_regime[regime] = {'wins': 0, 'losses': 0}
-        if r['exit_status'] == 'STOP_LOSS':
-            by_regime[regime]['losses'] += 1
-        elif r['exit_status'] in ('TP1_HIT', 'TP2_HIT', 'COMPLETED'):
-            by_regime[regime]['wins'] += 1
-    
-    # Bounce-back analysis untuk SL trades
-    sl_rows = [r for r in rows if r['exit_status'] == 'STOP_LOSS' and r['price_24h_after']]
-    bounce_count = 0
-    continued_down = 0
-    for r in sl_rows:
-        if r['price_24h_after'] and r['entry']:
-            if r['price_24h_after'] >= r['entry']:
-                bounce_count += 1
-            elif r['price_24h_after'] < r['exit_price']:
-                continued_down += 1
-    
-    report = (
-        f"📊 <b>NOVA7 AUDIT REPORT</b>\n"
-        f"<i>Last 50 closed trades</i>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>Overall:</b> {wins}W / {losses}L "
-        f"({(wins/total*100):.1f}% WR)\n\n"
-        f"<b>📈 By BTC Regime:</b>\n"
-    )
-    for regime, stats in sorted(by_regime.items()):
-        t = stats['wins'] + stats['losses']
-        wr = (stats['wins'] / t * 100) if t > 0 else 0
-        report += f"• {regime}: {stats['wins']}W/{stats['losses']}L ({wr:.0f}%)\n"
-    
-    report += f"\n<b>🔬 Post-SL Analysis (24H):</b>\n"
-    if sl_rows:
-        report += (f"• Sambung turun: {continued_down}/{len(sl_rows)} "
-                   f"({continued_down/len(sl_rows)*100:.0f}%)\n"
-                   f"• Bounce ke entry: {bounce_count}/{len(sl_rows)} "
-                   f"({bounce_count/len(sl_rows)*100:.0f}%)\n")
-        if continued_down / len(sl_rows) > 0.6:
-            report += "\n⚠️ <b>Diagnosis:</b> Majoriti SL diikuti dengan continuation = trend filter kurang ketat\n"
-        elif bounce_count / len(sl_rows) > 0.4:
-            report += "\n⚠️ <b>Diagnosis:</b> Banyak bounce-back = SL terlalu ketat atau entry terlalu lewat\n"
-    else:
-        report += "<i>Tiada SL dengan tracking data lengkap lagi</i>\n"
-    
-    return report
-
-# ==========================================
 # MATEMATIK O(1)
 # ==========================================
 class IncrementalIndicators:
-    def __init__(self):
+    def __init__(self):  # FIX: def init -> def __init__
         self.closes, self.highs, self.lows, self.volumes = [], [], [], []
         self.ema21 = self.ema50 = None
         self.rsi = 50.0
         self.avg_gain = self.avg_loss = 0.0
         self.prev_close = None
-        self.atr = 0.0   # ATR(14) Wilder — untuk SL adaptive
         self.k21, self.k50 = 2.0 / 22, 2.0 / 51
 
     def initialize(self, closes, highs, lows, volumes):
-        if len(closes) < 51:
+        if len(closes) < 51: 
             return False
         self.closes, self.highs, self.lows, self.volumes = closes[-100:], highs[-100:], lows[-100:], volumes[-100:]
-        # EMA — seed betul, iterate dari index seed
+        # FIX: EMA initialization — each EMA must iterate from its own seed index
         self.ema21 = sum(closes[:21]) / 21
         for p in closes[21:]:
             self.ema21 = p * self.k21 + self.ema21 * (1 - self.k21)
         self.ema50 = sum(closes[:50]) / 50
         for p in closes[50:]:
             self.ema50 = p * self.k50 + self.ema50 * (1 - self.k50)
-        # RSI — Wilder smoothing
         deltas = [closes[i] - closes[i - 1] for i in range(1, 15)]
         self.avg_gain = sum(d for d in deltas if d > 0) / 14
         self.avg_loss = sum(-d for d in deltas if d < 0) / 14
@@ -322,95 +180,25 @@ class IncrementalIndicators:
             self.avg_loss = (self.avg_loss * 13 + (-d if d < 0 else 0)) / 14
         self._update_rsi()
         self.prev_close = closes[-1]
-        # ATR(14) — Wilder smoothing
-        # True Range = max(H-L, |H-prevC|, |L-prevC|)
-        trs = []
-        for i in range(1, len(closes)):
-            tr = max(
-                highs[i] - lows[i],
-                abs(highs[i] - closes[i - 1]),
-                abs(lows[i] - closes[i - 1])
-            )
-            trs.append(tr)
-        self.atr = sum(trs[:14]) / 14
-        for tr in trs[14:]:
-            self.atr = (self.atr * 13 + tr) / 14
         return True
 
     def _update_rsi(self):
         self.rsi = 100.0 if self.avg_loss == 0 else 100 - (100 / (1 + self.avg_gain / self.avg_loss))
 
     def get_rvol(self):
-        if len(self.volumes) < 21:
+        if len(self.volumes) < 21: 
             return 1.0
         avg = sum(self.volumes[-21:-1]) / 20
         return self.volumes[-1] / avg if avg > 0 else 1.0
 
-    def get_rvol_series(self, n=3):
-        """
-        Return list RVOL untuk n candle terakhir.
-        [rvol_sekarang, rvol_1_candle_lepas, rvol_2_candle_lepas, ...]
-        Digunakan untuk sustainability check — elak news spike tunggal.
-
-        FIX: Setiap candle kini menggunakan base window yang BETUL —
-        20 candle SEBELUM candle tersebut (bukan base statik yg sama).
-        Sebelum ini volumes[-2] dan [-3] termasuk dalam base mereka sendiri,
-        menyebabkan RVOL historical kelihatan rendah palsu.
-        i=0: base = volumes[-21:-1]  (20 candle sebelum candle semasa)
-        i=1: base = volumes[-22:-2]  (20 candle sebelum candle -2)
-        i=2: base = volumes[-23:-3]  (20 candle sebelum candle -3)
-        """
-        if len(self.volumes) < 22:
-            return [1.0] * n
-        result = []
-        for i in range(n):
-            idx = -(1 + i)          # candle yg dinilai: -1, -2, -3 ...
-            base_start = -(21 + i)  # 20 candle sebelumnya (tidak termasuk candle idx)
-            base_end   = -(1 + i)   # exclusive end: -1, -2, -3 ...
-            base_vols  = self.volumes[base_start:base_end]
-            if len(base_vols) < 10:
-                result.append(1.0)
-                continue
-            avg_base = sum(base_vols) / len(base_vols)
-            if avg_base <= 0:
-                result.append(1.0)
-                continue
-            if abs(idx) <= len(self.volumes):
-                result.append(self.volumes[idx] / avg_base)
-            else:
-                result.append(1.0)
-        return result
-
-    def get_atr_sl(self, structure_low, multiplier=1.5):
-        """
-        ATR-based Stop Loss.
-        SL = structure_low - (multiplier × ATR14)
-        
-        Mengapa 1.5x ATR?
-        - ATR(14) adalah purata volatility harian normal
-        - 1.5x memberikan ruang untuk wick normal tanpa kena sweep
-        - Kurang dari 1x = terlalu ketat (dalam wick biasa)
-        - Lebih dari 2x = SL terlalu jauh, RR ratio memburuk
-        
-        Position size dikira semula secara automatic oleh
-        calculate_position_size() — risk_usd kekal sama,
-        hanya bilangan unit yang berubah.
-        """
-        if self.atr <= 0:
-            return structure_low * 0.995  # fallback ke fixed % jika ATR tiada
-        return structure_low - (multiplier * self.atr)
-
     def get_bb_width(self):
-        if len(self.closes) < 20:
+        if len(self.closes) < 20: 
             return 10.0
         recent = self.closes[-20:]
-        n = len(recent)
-        sma = sum(recent) / n
-        # Sample std (÷N-1) — konsisten dengan TradingView dan Bloomberg standard.
-        # Population std (÷N) akan bagi nilai ~2.6% lebih kecil dari TradingView.
-        # Bollinger Band Width = (Upper - Lower) / Middle × 100 = (4σ / SMA) × 100
-        variance = sum((p - sma) ** 2 for p in recent) / (n - 1)
-        std = variance ** 0.5
+        sma = sum(recent) / 20
+        std = (sum((p - sma) ** 2 for p in recent) / 20) ** 0.5
+        # FIX: Standard Bollinger Band Width = (Upper - Lower) / Middle * 100
+        # = (SMA + 2σ - (SMA - 2σ)) / SMA * 100 = (4σ / SMA) * 100
         return (4 * std / sma) * 100 if sma > 0 else 10.0
 
     def get_recent_high(self):
@@ -423,76 +211,42 @@ class BreakoutHunter:
     def check(self, ind, t):
         if len(ind.closes) < 51:
             return None, {"Data Sejarah": "Kurang 51 candle (Gagal)"}
-        close = ind.closes[-1]
-        rvol_series = ind.get_rvol_series(3)   # [now, -1, -2]
-        rvol = rvol_series[0]
-        recent_high = ind.get_recent_high()
-        rsi_min  = t.get('bo_rsi_min', 50)
-        rsi_max  = t.get('bo_rsi_max', 75)
+        close, rvol, recent_high = ind.closes[-1], ind.get_rvol(), ind.get_recent_high()
+        rsi_min = t.get('bo_rsi_min', 50)
+        rsi_max = t.get('bo_rsi_max', 75)
         rvol_min = t.get('bo_rvol', 1.8)
-
-        # RVOL sustainability: candle semasa mesti ≥ threshold,
-        # DAN sekurang-kurangnya SATU dari 2 candle sebelumnya ≥ 60% threshold.
-        # Ini reject news spike tunggal, tapi lulus genuine momentum.
-        rvol_sustained = rvol >= rvol_min and (
-            rvol_series[1] >= rvol_min * 0.6 or
-            rvol_series[2] >= rvol_min * 0.6
-        )
-
         conditions = {
             f"Pecah High 20-C ({recent_high:.6f})": close > recent_high,
             f"Atas EMA21 ({ind.ema21:.6f})": close > ind.ema21,
-            "Uptrend (EMA21 > EMA50)": ind.ema21 > ind.ema50,
-            f"RVOL Sustained >= {rvol_min}x [{rvol:.2f}x, prev:{rvol_series[1]:.2f}x]": rvol_sustained,
+            "Uptrend (EMA21 >EMA50)": ind.ema21 > ind.ema50,
+            f"RVOL >= {rvol_min}x [{rvol:.2f}x]": rvol >= rvol_min,
             f"RSI {rsi_min}-{rsi_max} [{ind.rsi:.1f}]": rsi_min < ind.rsi < rsi_max
         }
         if all(conditions.values()):
+            # FIX: SL dari 20-candle structure low (robust), bukan 5-candle (terlalu pendek untuk 1H)
             structure_low = min(ind.lows[-20:])
-            # ATR-based SL — adaptive kepada volatility coin
-            atr_sl = ind.get_atr_sl(structure_low, multiplier=1.5)
-            sig = {
-                'type': 'BREAKOUT', 'rvol': rvol,
-                'break_level': recent_high,
-                'low': structure_low,
-                'atr_sl': atr_sl,
-                'atr': ind.atr
-            }
+            sig = {'type': 'BREAKOUT', 'rvol': rvol, 'break_level': recent_high, 'low': structure_low}
             return sig, conditions
-        return None, conditions
+        return None, conditions  # FIX: conditi ons -> conditions
 
 class AccumulationDetective:
     def check(self, ind, t):
-        if len(ind.closes) < 51:
+        if len(ind.closes) < 51: 
             return None, {}
-        close = ind.closes[-1]
-        bb    = ind.get_bb_width()
-        rvol_series = ind.get_rvol_series(3)
-        rvol  = rvol_series[0]
-        bb_max   = t.get('acc_bb_width', 24.0)
+        close, bb, rvol = ind.closes[-1], ind.get_bb_width(), ind.get_rvol()
+        bb_max = t.get('acc_bb_width', 6.0)
         rvol_min = t.get('acc_rvol', 2.0)
-        rsi_max  = t.get('acc_rsi_max', 45)
-
-        # Sustainability: Accumulation perlu volume sustain (bukan news spike)
-        rvol_sustained = rvol >= rvol_min and (
-            rvol_series[1] >= rvol_min * 0.6 or
-            rvol_series[2] >= rvol_min * 0.6
-        )
-
+        rsi_max = t.get('acc_rsi_max', 45)  # FIX: ac c_rsi_max -> acc_rsi_max
         conditions = {
             f"BB Width < {bb_max}% [{bb:.2f}%]": bb < bb_max,
-            f"RVOL Sustained >= {rvol_min}x [{rvol:.2f}x, prev:{rvol_series[1]:.2f}x]": rvol_sustained,
+            f"RVOL >= {rvol_min}x [{rvol:.2f}x]": rvol >= rvol_min,
             "Bawah EMA50 (Accum Zone)": close < ind.ema50,
             f"RSI < {rsi_max} [{ind.rsi:.1f}]": ind.rsi < rsi_max
         }
         if all(conditions.values()):
+            # FIX: SL dari 20-candle structure low (robust)
             structure_low = min(ind.lows[-20:])
-            atr_sl = ind.get_atr_sl(structure_low, multiplier=1.5)
-            sig = {
-                'type': 'ACCUMULATION', 'rvol': rvol, 'bb': bb,
-                'low': structure_low,
-                'atr_sl': atr_sl,
-                'atr': ind.atr
-            }
+            sig = {'type': 'ACCUMULATION', 'rvol': rvol, 'bb': bb, 'low': structure_low}
             return sig, conditions
         return None, conditions
 
@@ -501,172 +255,23 @@ class AccumulationDetective:
 # ==========================================
 
 # ==========================================
-# BTC MARKET REGIME GATE (3-LAYER)
+# DAILY CONFLUENCE (TRAP KILLER)
 # ==========================================
-def _compute_ema_series(closes, period):
-    """Helper: kira EMA dengan cara betul (seed SMA, kemudian iterative)."""
-    k = 2.0 / (period + 1)
-    ema = sum(closes[:period]) / period
-    for p in closes[period:]:
-        ema = p * k + ema * (1 - k)
-    return ema
-
-async def _fetch_json_async(session, url):
-    """Helper: fetch JSON dengan aiohttp, consistent timeout."""
-    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-        return await resp.json()
-
-async def get_btc_regime_async():
-    """
-    Async version — tidak block event loop.
-    
-    Prinsip keselamatan: Bila API error, hard_block=True (fail-SAFE).
-    Dalam trading, bila data tidak pasti, lebih baik tidak trade.
-    
-    Mathematical basis:
-    - EMA21 < EMA50 pada Daily = intermediate downtrend (industry standard)
-    - 2% margin mengurangkan whipsaw bila EMA bersilang rapat
-    - -3% 24H catch risk-off events yang terlalu pantas untuk EMA
-    """
-    _SAFE_BLOCK = {'error': None, 'hard_block': True, 'soft_tighten': False,
-                   'daily_trend': 'UNKNOWN', 'h4_trend': 'UNKNOWN', 'h24_change': 0,
-                   'block_reason': 'BTC data unavailable (fail-safe)'}
+def check_daily_confluence(symbol, current_price):
     try:
-        async with aiohttp.ClientSession() as session:
-            url_d = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=60"
-            url_4h = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=4h&limit=60"
-            # Fetch kedua-dua serentak — lebih cepat dari sequential
-            res_d, res_4h = await asyncio.gather(
-                _fetch_json_async(session, url_d),
-                _fetch_json_async(session, url_4h)
-            )
-
-        if not isinstance(res_d, list) or len(res_d) < 51:
-            logger.warning("[BTC GATE] Daily data insufficient — fail-safe block")
-            return {**_SAFE_BLOCK, 'block_reason': 'BTC daily data insufficient'}
-        if not isinstance(res_4h, list) or len(res_4h) < 51:
-            logger.warning("[BTC GATE] 4H data insufficient — fail-safe block")
-            return {**_SAFE_BLOCK, 'block_reason': 'BTC 4H data insufficient'}
-
-        closes_d = [float(d[4]) for d in res_d]
-        closes_4h = [float(d[4]) for d in res_4h]
-
-        ema21_d = _compute_ema_series(closes_d, 21)
-        ema50_d = _compute_ema_series(closes_d, 50)
-        ema21_4h = _compute_ema_series(closes_4h, 21)
-        ema50_4h = _compute_ema_series(closes_4h, 50)
-
-        daily_bullish = ema21_d > ema50_d * 0.98
-        h4_bullish = ema21_4h > ema50_4h
-        h24_change = ((closes_d[-1] - closes_d[-2]) / closes_d[-2]) * 100
-
-        hard_block = (not daily_bullish) or (h24_change < -3.0)
-        soft_tighten = (not h4_bullish) and daily_bullish and (h24_change >= -3.0)
-
-        return {
-            'daily_trend': 'BULLISH' if daily_bullish else 'BEARISH',
-            'h4_trend': 'BULLISH' if h4_bullish else 'BEARISH',
-            'h24_change': round(h24_change, 2),
-            'ema21_d': ema21_d, 'ema50_d': ema50_d,
-            'hard_block': hard_block,
-            'soft_tighten': soft_tighten,
-            'block_reason': (
-                'Daily BEARISH (EMA21<EMA50)' if not daily_bullish else
-                f'BTC 24H crash ({h24_change:.1f}%)' if h24_change < -3.0 else None
-            ),
-            'error': None
-        }
-    except Exception as e:
-        logger.warning(f"[BTC GATE] API error: {e} — fail-safe block aktif")
-        return {**_SAFE_BLOCK, 'block_reason': f'API error: {str(e)[:50]}'}
-
-# Cache BTC regime — async-safe dengan asyncio.Lock
-_btc_regime_cache = {'data': None, 'ts': 0}
-_btc_regime_alock = None  # init dalam async context (tidak boleh buat asyncio.Lock() di module level)
-
-async def get_btc_regime_cached(ttl=60):
-    """
-    Async-safe cached BTC regime.
-    asyncio.Lock mesti dibuat dalam running event loop — ini adalah cara betul.
-    """
-    global _btc_regime_alock
-    if _btc_regime_alock is None:
-        _btc_regime_alock = asyncio.Lock()
-    async with _btc_regime_alock:
-        now = time.time()
-        if _btc_regime_cache['data'] is None or (now - _btc_regime_cache['ts']) > ttl:
-            _btc_regime_cache['data'] = await get_btc_regime_async()
-            _btc_regime_cache['ts'] = now
-        return _btc_regime_cache['data']
-
-# ==========================================
-# DAILY CONFLUENCE (TRAP KILLER) — DIPERBAIKI DENGAN REVERSAL CONFIRMATION
-# ==========================================
-async def check_daily_confluence(symbol, current_price):
-    """
-    Async — tidak block event loop.
-    Validate symbol confluence pada Daily timeframe.
-    Guna _compute_ema_series dan _fetch_json_async helpers untuk konsisten.
-    """
-    def _local_rsi(close_series, period=14):
-        if len(close_series) < period + 1:
-            return 50.0
-        gains, losses = [], []
-        for i in range(1, len(close_series)):
-            d = close_series[i] - close_series[i-1]
-            gains.append(d if d > 0 else 0)
-            losses.append(-d if d < 0 else 0)
-        avg_gain = sum(gains[:period]) / period
-        avg_loss = sum(losses[:period]) / period
-        for i in range(period, len(gains)):
-            avg_gain = (avg_gain * (period-1) + gains[i]) / period
-            avg_loss = (avg_loss * (period-1) + losses[i]) / period
-        if avg_loss == 0:
-            return 100.0
-        return 100 - (100 / (1 + avg_gain / avg_loss))
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1d&limit=60"
-            res = await _fetch_json_async(session, url)
-
-        if not isinstance(res, list) or len(res) < 50:
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1d&limit=60"
+        res = requests.get(url, timeout=10).json()
+        if not isinstance(res, list) or len(res) < 50: 
             return False, "Data Daily tidak cukup"
-
-        closes  = [float(d[4]) for d in res]
-        opens   = [float(d[1]) for d in res]
-        lows    = [float(d[3]) for d in res]
-        volumes = [float(d[5]) for d in res]
-
-        ema50_d = _compute_ema_series(closes, 50)
-
-        # PATH A: Uptrend — above Daily EMA50
+        closes = [float(d[4]) for d in res]
+        lows = [float(d[3]) for d in res]
+        ema50_d = sum(closes[-50:]) / 50
+        low_20d = min(lows[-20:])
         if current_price > ema50_d:
             return True, f"Above Daily EMA50 ({ema50_d:.6f})"
-
-        # PATH B: 3-factor Reversal Confirmation
-        low_20d = min(lows[-20:])
-        if current_price >= low_20d * 1.03:
-            return False, f"Below Daily EMA50 ({ema50_d:.6f}) & not at support"
-
-        last_bullish = closes[-1] > opens[-1]
-        rsi_now  = _local_rsi(closes)
-        rsi_3ago = _local_rsi(closes[:-3])
-        bullish_divergence = (rsi_now - rsi_3ago) >= 5.0
-        avg_vol_20 = sum(volumes[-21:-1]) / 20 if len(volumes) >= 21 else 1
-        rvol = volumes[-1] / avg_vol_20 if avg_vol_20 > 0 else 1
-        volume_confirm = rvol >= 1.5
-
-        if last_bullish and bullish_divergence and volume_confirm:
-            return True, (f"Reversal Confirmed @ {low_20d:.6f} "
-                          f"[RSI Δ+{rsi_now - rsi_3ago:.1f}, RVOL {rvol:.2f}x, Bull Candle]")
-
-        failed = []
-        if not last_bullish: failed.append("no bull candle")
-        if not bullish_divergence: failed.append(f"no RSI div (Δ{rsi_now - rsi_3ago:+.1f})")
-        if not volume_confirm: failed.append(f"low vol ({rvol:.2f}x)")
-        return False, f"At support but {', '.join(failed)}"
-
+        if current_price < low_20d * 1.03:
+            return True, f"Bouncing from 20D Support ({low_20d:.6f})"
+        return False, f"Below Daily EMA50 ({ema50_d:.6f}) & No Support"
     except Exception as e:
         return False, f"Error: {str(e)[:50]}"
 
@@ -676,29 +281,27 @@ async def check_daily_confluence(symbol, current_price):
 def generate_ai_insight(symbol):
     """
     Logic Engine: Membaca indikator dan menulis ringkasan 'bahasa manusia'.
-    Dipanggil dari sync bot handler — guna requests adalah betul di sini
-    kerana bot handler berjalan dalam thread berasingan dari asyncio loop.
-    FIX: Guna EMA betul via _compute_ema_series, bukan SMA dilabel EMA.
+    Zero Cost, No External API.
     """
     try:
         url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=100"
         res = requests.get(url, timeout=10).json()
         closes = [float(d[4]) for d in res]
         volumes = [float(d[7]) for d in res]
-        if len(closes) < 51:
+        if len(closes) < 51: 
             return "❌ Data tidak mencukupi untuk analisis."
 
+        # Kira indikator asas
         close_now = closes[-1]
-        # FIX: Guna EMA betul (iterative), bukan SMA yang dilabel sebagai EMA
-        ema21 = _compute_ema_series(closes, 21)
-        ema50 = _compute_ema_series(closes, 50)
+        ema21 = sum(closes[-21:]) / 21
+        ema50 = sum(closes[-50:]) / 50
 
         # Kira RVOL
         avg_vol = sum(volumes[-21:-1]) / 20 if len(volumes) > 21 else 1
         rvol = volumes[-1] / avg_vol if avg_vol > 0 else 1
 
         # Logik Analisis
-        analysis = f"🤖 <b>NOVA7 AI INSIGHT: {symbol}</b>\n"
+        analysis = f"🤖 **NOVA7 AI INSIGHT: {symbol}**\n"
         analysis += "┈┈┈┈┈┈┈┈┈┈\n"
 
         # 1. Trend Check
@@ -760,16 +363,13 @@ def build_keyboard(symbol):
 
     return markup
 
-def dispatch_signal(symbol, price, sig, ind, engine_type, chart_buf, daily_note, user_cap, user_risk, sl=None):
+def dispatch_signal(symbol, price, sig, ind, engine_type, chart_buf, daily_note, user_cap, user_risk):
     if not bot or not TELEGRAM_CHAT_ID or check_cooldown(symbol):
-        return None
-    # Guna ATR-based SL yang dikira oleh engine, jika tiada fallback ke fixed
-    if sl is None:
-        structure_low = sig.get('low', price * 0.97)
-        sl = sig.get('atr_sl', structure_low * 0.995)
+        return
+    sl = sig['low'] * 0.995
     risk = price - sl
     if risk <= 0:
-        return None
+        return
 
     tp1, tp2, tp3 = price + (risk * 2.0), price + (risk * 3.5), price + (risk * 5.5)
     pos_usd, pos_coins, risk_usd = calculate_position_size(user_cap, user_risk, price, sl)
@@ -783,8 +383,6 @@ def dispatch_signal(symbol, price, sig, ind, engine_type, chart_buf, daily_note,
 
     emoji, title = ("🚀", "BREAKOUT RADAR") if engine_type == 'BREAKOUT' else ("🕵️", "ACCUMULATION SNIPER")
     desc = f"Break: <code>${sig.get('break_level', 0):.6f}</code>" if engine_type == 'BREAKOUT' else f"BB Squeeze: {sig.get('bb', 0):.2f}%"
-    atr_val = sig.get('atr', 0)
-    atr_pct = (atr_val / price * 100) if price > 0 and atr_val > 0 else 0
 
     msg = (
         f"{emoji} <b>{title}: {symbol}</b> <i>[{mode_name}]</i>\n"
@@ -795,8 +393,7 @@ def dispatch_signal(symbol, price, sig, ind, engine_type, chart_buf, daily_note,
         f"📊 <b>EMA21:</b> ${ind.ema21:.6f} | <b>EMA50:</b> ${ind.ema50:.6f}\n"
         f"🗓️ <b>Daily TF:</b> <i>{daily_note}</i>\n"
         f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
-        f"🛑 <b>SL (ATR×1.5):</b> <code>${sl:.6f}</code>"
-        + (f" <i>[ATR {atr_pct:.2f}%]</i>" if atr_pct > 0 else "") + "\n"
+        f"🛑 <b>SL:</b> <code>${sl:.6f}</code>\n"
         f"🎯 <b>TP1 (2R):</b> <code>${tp1:.6f}</code>\n"
         f"🎯 <b>TP2 (3.5R):</b> <code>${tp2:.6f}</code>\n"
         f"🎯 <b>TP3 (5.5R):</b> <code>${tp3:.6f}</code>\n"
@@ -817,42 +414,35 @@ def dispatch_signal(symbol, price, sig, ind, engine_type, chart_buf, daily_note,
         save_trade(sent.message_id, symbol, price, sl, tp1, tp2, tp3, engine_type)
         save_cooldown(symbol, t.get('cd_breakout', 24) if engine_type == 'BREAKOUT' else t.get('cd_accumulation', 48))
         logger.info(f"✅ [SIGNAL] {symbol} ({engine_type}) dispatched.")
-        return sent.message_id
     except Exception as e:
         logger.error(f"Dispatch error: {e}")
-        return None
 
 # ==========================================
 # POST-MORTEM AUTOPSY
 # ==========================================
-async def spot_post_mortem(symbol):
-    """Async — tidak block trade_tracker event loop."""
+def spot_post_mortem(symbol):
     try:
-        async with aiohttp.ClientSession() as session:
-            url_sym = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=24"
-            url_btc = f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=24"
-            res_sym, res_btc = await asyncio.gather(
-                _fetch_json_async(session, url_sym),
-                _fetch_json_async(session, url_btc)
-            )
+        url_sym = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=24"
+        url_btc = f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1h&limit=24"
+        res_sym = requests.get(url_sym, timeout=10).json()
+        res_btc = requests.get(url_btc, timeout=10).json()
         vols = [float(d[7]) for d in res_sym]
-        avg_vol = sum(vols[:20]) / 20 if len(vols) >= 20 else 1
+        avg_vol = sum(vols[:20]) / 20 if len(vols) >= 20 else 1  # FIX: v ols -> vols
         rvol_now = vols[-1] / avg_vol if avg_vol > 0 else 1
         btc_start = float(res_btc[0][1])
-        btc_end   = float(res_btc[-1][4])
+        btc_end = float(res_btc[-1][4])
         btc_change = ((btc_end - btc_start) / btc_start) * 100
         closes = [float(d[4]) for d in res_sym]
-        # FIX: Guna EMA betul, bukan SMA
-        ema21 = _compute_ema_series(closes, 21) if len(closes) >= 21 else closes[-1]
+        ema21 = sum(closes[-21:]) / 21 if len(closes) >= 21 else closes[-1]  # FIX: s um -> sum
         below_ema = closes[-1] < ema21
         reasons = []
-        if rvol_now < 1.0:
+        if rvol_now < 1.0: 
             reasons.append(f"🩸 <b>Volume Trap:</b> RVOL {rvol_now:.2f}x")
-        if btc_change < -1.5:
+        if btc_change < -1.5: 
             reasons.append(f"📉 <b>Macro Drag:</b> BTC {btc_change:.2f}%")
-        if below_ema:
+        if below_ema: 
             reasons.append("📉 <b>Structure Break:</b> Gagal tahan EMA21")
-        if not reasons:
+        if not reasons: 
             reasons.append("🎲 <b>Market Noise:</b> Whipsaw rawak")
         return "\n".join(reasons)
     except Exception:
@@ -991,22 +581,9 @@ def get_stats_snapshot():
         return dict(stats)
 
 def log_activity(msg):
-    """Simpan activity log untuk dipaparkan dalam pulse.
-    FIX: Deduplication — jika coin yang sama sudah ada dalam log dengan
-    status failure (❌/🚫), gantikan entry lama supaya log tidak penuh
-    dengan coin yang sama berulang-ulang dari batch accumulation scan.
-    """
-    symbol_prefix = msg.split()[0] if msg else ''
-    is_failure = '❌' in msg or '🚫' in msg
-    if is_failure and symbol_prefix:
-        # Buang entry lama untuk coin yang sama (failure sahaja)
-        for i in range(len(activity_log) - 1, -1, -1):
-            entry = activity_log[i]
-            if entry.startswith(symbol_prefix) and ('❌' in entry or '🚫' in entry):
-                activity_log.pop(i)
-                break
+    """Simpan activity log untuk dipaparkan dalam pulse."""
     activity_log.append(msg)
-    if len(activity_log) > 20:
+    if len(activity_log) > 20: 
         activity_log.pop(0)
     logger.info(f"🎯 [SNIPER] {msg}")
 
@@ -1035,19 +612,11 @@ async def layer1_radar():
                     # ACTIVITY PULSE setiap 5 minit
                     if now - last_pulse >= 300:
                         snap = get_stats_snapshot()  # FIX: thread-safe read
-                        # FIX Bug 2: Kira delta (bukan kumulatif) supaya konsisten
-                        # dengan pulse_stats['promoted'] yang sudah reset tiap 5 min.
-                        delta_signals  = snap['signals_sent'] - pulse_stats.get('prev_signals', 0)
-                        delta_rejected = snap['rejected']      - pulse_stats.get('prev_rejected', 0)
-                        logger.info(f"💓 [PULSE] Radar: {pulse_stats['seen']} coins | Promoted: {pulse_stats['promoted']} | Signals: {delta_signals} | Rejected: {delta_rejected}")
+                        logger.info(f"💓 [PULSE] Radar: {pulse_stats['seen']} coins | Promoted: {pulse_stats['promoted']} | Signals: {snap['signals_sent']} | Rejected: {snap['rejected']}")
                         if activity_log:
                             logger.info(f"📋 [RECENT] {' | '.join(activity_log[-5:])}")
                         last_pulse = now
-                        pulse_stats = {
-                            'promoted': 0, 'seen': 0,
-                            'prev_signals':  snap['signals_sent'],
-                            'prev_rejected': snap['rejected']
-                        }
+                        pulse_stats = {'promoted': 0, 'seen': 0}
 
                     if now - last_snapshot < 3.0: 
                         continue
@@ -1159,33 +728,6 @@ async def layer2_sniper(symbol, scan_type, force=False, chat_id=None, user_cap=1
         t = get_tuning()
         if not force and check_cooldown(symbol): 
             return
-        
-        # ═══════════════════════════════════════════════════════
-        # BTC MARKET REGIME GATE (LAYER 0 — runs before anything else)
-        # ═══════════════════════════════════════════════════════
-        btc_regime = await get_btc_regime_cached()
-        if not force:
-            if btc_regime.get('hard_block'):
-                reason = btc_regime.get('block_reason', 'BTC regime risk')
-                log_activity(f"{symbol} 🚫 BTC GATE: {reason}")
-                bump_stat('rejected')
-                if chat_id and bot:
-                    bot.send_message(chat_id, 
-                        f"🚫 <b>{symbol}</b> blocked: {reason}\n"
-                        f"<i>BTC Daily: {btc_regime.get('daily_trend')} | "
-                        f"24H: {btc_regime.get('h24_change')}%</i>",
-                        parse_mode="HTML")
-                return
-            
-            # SOFT TIGHTEN: clone tuning dan tighten parameters
-            if btc_regime.get('soft_tighten'):
-                t = dict(t)  # shallow copy
-                t['bo_rvol'] = t.get('bo_rvol', 1.8) + 0.3
-                t['bo_rsi_min'] = max(t.get('bo_rsi_min', 50), 55)
-                t['bo_rsi_max'] = min(t.get('bo_rsi_max', 75), 70)
-                t['acc_rvol'] = t.get('acc_rvol', 2.0) + 0.3
-                log_activity(f"{symbol} ⚠️ BTC 4H bearish — tightening params")
-        
         async with aiohttp.ClientSession() as session:
             url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=100"
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
@@ -1204,9 +746,9 @@ async def layer2_sniper(symbol, scan_type, force=False, chat_id=None, user_cap=1
                 else:
                     sig, conditions = AccumulationDetective().check(ind, t)
 
+                # Kira SL/TP (Atau Dummy jika signal invalid untuk tujuan visualisasi carta)
                 if sig:
-                    # Guna ATR-based SL dari engine — adaptive kepada volatility
-                    sl = sig.get('atr_sl', sig['low'] * 0.995)
+                    sl = sig['low'] * 0.995
                     risk = closes[-1] - sl
                     tp1 = closes[-1] + (risk * 2.0)
                     tp2 = closes[-1] + (risk * 3.5)
@@ -1226,7 +768,7 @@ async def layer2_sniper(symbol, scan_type, force=False, chat_id=None, user_cap=1
                     daily_filter_on = t.get('bo_daily_filter', 1) == 1
                     daily_ok, daily_note = True, "Filter OFF"
                     if daily_filter_on:
-                        daily_ok, daily_note = await check_daily_confluence(symbol, closes[-1])
+                        daily_ok, daily_note = check_daily_confluence(symbol, closes[-1])
 
                     if not daily_ok and not force:
                         log_activity(f"{symbol} ❌ Daily Filter: {daily_note}")
@@ -1236,10 +778,7 @@ async def layer2_sniper(symbol, scan_type, force=False, chat_id=None, user_cap=1
                         return
 
                     log_activity(f"{symbol} ✅ VALID ({scan_type}) → Dispatching")
-                    msg_id = dispatch_signal(symbol, closes[-1], sig, ind, scan_type, chart_buf, daily_note, user_cap, user_risk, sl=sl)
-                    # Audit log
-                    if msg_id:
-                        audit_log_signal(msg_id, symbol, scan_type, closes[-1], sl, btc_regime)
+                    dispatch_signal(symbol, closes[-1], sig, ind, scan_type, chart_buf, daily_note, user_cap, user_risk)
                     bump_stat('signals_sent')
                 else:
                     # Log kenapa gagal (ringkas)
@@ -1276,7 +815,7 @@ async def trade_tracker():
             price = latest_prices[sym]['c']  # FIX: latest_p rices -> latest_prices
             status, reply, new_status = t['status'], None, t['status']
             if price <= t['sl'] and status not in ['STOP_LOSS', 'COMPLETED']:
-                autopsy = await spot_post_mortem(sym)
+                autopsy = spot_post_mortem(sym)
                 reply = f"🛑 <b>{sym} — STOP LOSS HIT</b>\nProteksi modal pada <code>${price:.6f}</code>\n\n🔬 <b>POST-MORTEM:</b>\n{autopsy}"
                 new_status = 'STOP_LOSS'
             elif price >= t['tp3'] and status != 'COMPLETED':
@@ -1289,12 +828,8 @@ async def trade_tracker():
                 try:
                     bot.send_message(TELEGRAM_CHAT_ID, reply, reply_to_message_id=t['msg_id'], parse_mode="HTML")
                     update_trade_status(t['msg_id'], new_status)
-                    # AUDIT: update exit info + trigger post-SL tracking
-                    audit_update_exit(t['msg_id'], new_status, price)
-                    if new_status == 'STOP_LOSS':
-                        audit_track_post_sl(t['msg_id'], sym)
-                except Exception as e:
-                    logger.warning(f"Trade tracker notify error for {sym}: {e}")
+                except: 
+                    pass
 
 # ==========================================
 # WEEKLY TEAR SHEET
@@ -1368,9 +903,7 @@ def cmd_start(msg):
         "/tune custom key=value\n"
         "/modal 1000 — Set modal\n"
         "/force FETUSDT — Scan manual\n"
-        "/report — Weekly tear sheet\n"
-        "/audit — Diagnostic report\n"
-        "/regime — BTC market regime\n"
+        "/report — Tear Sheet\n"
         "/status — System stats", parse_mode="HTML")
 
 @bot.message_handler(commands=['tune'])
@@ -1388,7 +921,7 @@ def cmd_tune(msg):
             f"• RSI range: <code>{t.get('bo_rsi_min', 50):.0f}-{t.get('bo_rsi_max', 75):.0f}</code>\n"
             f"• Daily Filter: <code>{'ON' if t.get('bo_daily_filter', 1) == 1 else 'OFF'}</code>\n"
             f"<b>🕵️ Accumulation Engine:</b>\n"
-            f"• BB Width max: <code>{t.get('acc_bb_width', 24.0):.1f}%</code>\n"
+            f"• BB Width max: <code>{t.get('acc_bb_width', 6.0):.1f}%</code>\n"
             f"• RVOL threshold: <code>{t.get('acc_rvol', 2.0):.2f}x</code>\n"
             f"• RSI max: <code>{t.get('acc_rsi_max', 45):.0f}</code>\n"
             f"<b>🐋 Radar:</b>\n"
@@ -1485,39 +1018,6 @@ def cmd_report(msg):
     bot.reply_to(msg, "⏳ <i>Menjana Tear Sheet...</i>", parse_mode="HTML")
     bot.reply_to(msg, generate_tear_sheet(), parse_mode="HTML")
 
-@bot.message_handler(commands=['audit'])
-def cmd_audit(msg):
-    """Generate audit report dengan post-trade analysis."""
-    bot.reply_to(msg, "⏳ <i>Menjana Audit Report...</i>", parse_mode="HTML")
-    bot.reply_to(msg, generate_audit_report(), parse_mode="HTML")
-
-@bot.message_handler(commands=['regime'])
-def cmd_regime(msg):
-    """Show current BTC market regime."""
-    import concurrent.futures
-    def _get():
-        return asyncio.run(get_btc_regime_cached(ttl=30))
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-        r = ex.submit(_get).result(timeout=15)
-    if r.get('error') and r.get('hard_block') and r.get('daily_trend') == 'UNKNOWN':
-        bot.reply_to(msg, f"❌ BTC data error: {r.get('block_reason', 'unknown')}", parse_mode="HTML")
-        return
-    status_emoji = "🟢" if not r['hard_block'] and not r['soft_tighten'] else (
-        "🔴" if r['hard_block'] else "🟡")
-    text = (
-        f"{status_emoji} <b>BTC MARKET REGIME</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📅 <b>Daily:</b> {r['daily_trend']}\n"
-        f"⏰ <b>4H:</b> {r['h4_trend']}\n"
-        f"📊 <b>24H Change:</b> {r['h24_change']}%\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>Signal Gate:</b> "
-        f"{'🚫 HARD BLOCK' if r['hard_block'] else ('⚠️ TIGHTENED' if r['soft_tighten'] else '✅ OPEN')}\n"
-    )
-    if r['hard_block']:
-        text += f"<i>Reason: {r.get('block_reason', 'N/A')}</i>\n"
-    bot.reply_to(msg, text, parse_mode="HTML")
-
 @bot.message_handler(commands=['force'])
 def cmd_force(msg):
     args = msg.text.split()
@@ -1572,7 +1072,7 @@ def graceful_shutdown(*args):
     if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
         try: 
             bot.send_message(ADMIN_CHAT_ID, "🔴 <b>[OFFLINE] NOVA7 DISCONNECTED.</b>", parse_mode="HTML")
-        except Exception:
+        except: 
             pass
     sys.exit(0)
 
