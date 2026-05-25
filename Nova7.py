@@ -1,3 +1,7 @@
+from datetime import datetime, timezone
+from flask import Flask, request
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+import matplotlib.pyplot as plt
 import os
 import time
 import json
@@ -16,24 +20,21 @@ import pandas as pd
 import mplfinance as mpf
 import matplotlib
 matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from flask import Flask, request
-from datetime import datetime, timezone
 
 # ==========================================
 # KONFIGURASI & LOGGING
 # ==========================================
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger("Nova7")
-
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID")
-
-bot = telebot.TeleBot(TELEGRAM_TOKEN, parse_mode="HTML") if TELEGRAM_TOKEN else None
+bot = telebot.TeleBot(
+    TELEGRAM_TOKEN,
+    parse_mode="HTML") if TELEGRAM_TOKEN else None
 is_scanning = True
-
 KILL_LIST = {
     'USDT', 'USDC', 'DAI', 'BUSD', 'TUSD', 'USDD', 'FDUSD', 'USDP', 'GUSD',
     'FRAX', 'LUSD', 'SUSD', 'EUR', 'TRY', 'BRL', 'AUD', 'GBP', 'USDS', 'PYUSD',
@@ -51,7 +52,6 @@ HEAVYWEIGHTS = {
 # ==========================================
 DB_NAME = "nova7_data.db"
 db_lock = threading.Lock()
-
 DEFAULT_TUNING = {
     'mode': 'standard',
     # Breakout params
@@ -60,7 +60,7 @@ DEFAULT_TUNING = {
     'bo_rsi_max': 75,
     'bo_daily_filter': 1,  # 1=on, 0=off
     # Accumulation params
-    'acc_bb_width': 6.0,
+    'acc_bb_width': 24.0,  # FIX: dikemaskini dari 6.0 → 24.0 untuk match standard BB formula (4σ/SMA)
     'acc_rvol': 2.0,
     'acc_rsi_max': 45,
     # Radar params
@@ -74,18 +74,20 @@ DEFAULT_TUNING = {
 def init_db():
     with db_lock, sqlite3.connect(DB_NAME) as conn:
         conn.execute('''CREATE TABLE IF NOT EXISTS active_trades
-                        (msg_id INTEGER PRIMARY KEY, symbol TEXT, entry REAL,
-                         sl REAL, tp1 REAL, tp2 REAL, tp3 REAL, engine TEXT,
-                         status TEXT, timestamp REAL)''')
+            (msg_id INTEGER PRIMARY KEY, symbol TEXT, entry REAL,
+            sl REAL, tp1 REAL, tp2 REAL, tp3 REAL, engine TEXT,
+            status TEXT, timestamp REAL)''')
         conn.execute('''CREATE TABLE IF NOT EXISTS cooldowns
-                        (symbol TEXT PRIMARY KEY, last_signal REAL)''')
+            (symbol TEXT PRIMARY KEY, last_signal REAL)''')
         conn.execute('''CREATE TABLE IF NOT EXISTS user_profiles
-                        (user_id INTEGER PRIMARY KEY, capital REAL, risk_pct REAL, updated REAL)''')
+            (user_id INTEGER PRIMARY KEY, capital REAL, risk_pct REAL, updated REAL)''')
         conn.execute('''CREATE TABLE IF NOT EXISTS tuning_params
-                        (key TEXT PRIMARY KEY, value REAL)''')
+            (key TEXT PRIMARY KEY, value REAL)''')
         # Init default tuning jika belum ada
         for k, v in DEFAULT_TUNING.items():
-            conn.execute("INSERT OR IGNORE INTO tuning_params VALUES (?, ?)", (k, float(v) if not isinstance(v, str) else 0))
+            conn.execute(
+                "INSERT OR IGNORE INTO tuning_params VALUES (?, ?)",
+                (k, float(v) if not isinstance(v, str) else 0))
     logger.info("✅ [DB] Nova7 SQLite initialized.")
 
 def get_tuning():
@@ -99,49 +101,58 @@ def set_tuning(params):
     with db_lock, sqlite3.connect(DB_NAME) as conn:
         for k, v in params.items():
             val = float(v) if not isinstance(v, str) else 0
-            conn.execute("INSERT OR REPLACE INTO tuning_params VALUES (?, ?)", (k, val))
+            conn.execute(
+                "INSERT OR REPLACE INTO tuning_params VALUES (?, ?)", (k, val))
 
 def save_trade(msg_id, symbol, entry, sl, tp1, tp2, tp3, engine):
     with db_lock, sqlite3.connect(DB_NAME) as conn:
         conn.execute('''INSERT OR REPLACE INTO active_trades
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'TRACKING', ?)''',
-                     (msg_id, symbol, entry, sl, tp1, tp2, tp3, engine, time.time()))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'TRACKING', ?)''',
+            (msg_id, symbol, entry, sl, tp1, tp2, tp3, engine, time.time()))
 
 def get_active_trades():
     with db_lock, sqlite3.connect(DB_NAME) as conn:
         conn.row_factory = sqlite3.Row
-        return conn.execute("SELECT * FROM active_trades WHERE status NOT IN ('COMPLETED', 'STOP_LOSS')").fetchall()
+        return conn.execute(
+            "SELECT * FROM active_trades WHERE status NOT IN ('COMPLETED', 'STOP_LOSS')").fetchall()
 
 def update_trade_status(msg_id, status):
     with db_lock, sqlite3.connect(DB_NAME) as conn:
-        conn.execute("UPDATE active_trades SET status=? WHERE msg_id=?", (status, msg_id))
+        conn.execute(
+            "UPDATE active_trades SET status=? WHERE msg_id=?", (status, msg_id))
 
 def save_cooldown(symbol, hours=24):
     with db_lock, sqlite3.connect(DB_NAME) as conn:
-        conn.execute("INSERT OR REPLACE INTO cooldowns VALUES (?, ?)", (symbol, time.time() + (hours * 3600)))
+        conn.execute("INSERT OR REPLACE INTO cooldowns VALUES (?, ?)",
+            (symbol, time.time() + (hours * 3600)))
 
 def check_cooldown(symbol):
     with db_lock, sqlite3.connect(DB_NAME) as conn:
-        row = conn.execute("SELECT last_signal FROM cooldowns WHERE symbol=?", (symbol,)).fetchone()
-        if row and time.time() < row[0]: return True
+        row = conn.execute(
+            "SELECT last_signal FROM cooldowns WHERE symbol=?", (symbol,)).fetchone()
+        if row and time.time() < row[0]: 
+            return True
     return False
 
 def set_user_capital(user_id, capital, risk_pct=2.0):
     with db_lock, sqlite3.connect(DB_NAME) as conn:
         conn.execute("INSERT OR REPLACE INTO user_profiles VALUES (?, ?, ?, ?)",
-                     (user_id, capital, risk_pct, time.time()))
+            (user_id, capital, risk_pct, time.time()))
 
 def get_user_capital(user_id):
     with db_lock, sqlite3.connect(DB_NAME) as conn:
-        row = conn.execute("SELECT capital, risk_pct FROM user_profiles WHERE user_id=?", (user_id,)).fetchone()
-        if row: return row[0], row[1]
+        row = conn.execute(
+            "SELECT capital, risk_pct FROM user_profiles WHERE user_id=?",
+            (user_id,)).fetchone()
+        if row: 
+            return row[0], row[1]
     return 1000.0, 2.0
 
 # ==========================================
 # MATEMATIK O(1)
 # ==========================================
 class IncrementalIndicators:
-    def __init__(self):
+    def __init__(self):  # FIX: def init -> def __init__
         self.closes, self.highs, self.lows, self.volumes = [], [], [], []
         self.ema21 = self.ema50 = None
         self.rsi = 50.0
@@ -150,17 +161,21 @@ class IncrementalIndicators:
         self.k21, self.k50 = 2.0 / 22, 2.0 / 51
 
     def initialize(self, closes, highs, lows, volumes):
-        if len(closes) < 51: return False
+        if len(closes) < 51: 
+            return False
         self.closes, self.highs, self.lows, self.volumes = closes[-100:], highs[-100:], lows[-100:], volumes[-100:]
-        self.ema21, self.ema50 = sum(closes[:21]) / 21, sum(closes[:50]) / 50
-        for p in closes[50:]:
+        # FIX: EMA initialization — each EMA must iterate from its own seed index
+        self.ema21 = sum(closes[:21]) / 21
+        for p in closes[21:]:
             self.ema21 = p * self.k21 + self.ema21 * (1 - self.k21)
+        self.ema50 = sum(closes[:50]) / 50
+        for p in closes[50:]:
             self.ema50 = p * self.k50 + self.ema50 * (1 - self.k50)
-        deltas = [closes[i] - closes[i-1] for i in range(1, 15)]
+        deltas = [closes[i] - closes[i - 1] for i in range(1, 15)]
         self.avg_gain = sum(d for d in deltas if d > 0) / 14
         self.avg_loss = sum(-d for d in deltas if d < 0) / 14
         for i in range(14, len(closes)):
-            d = closes[i] - closes[i-1]
+            d = closes[i] - closes[i - 1]
             self.avg_gain = (self.avg_gain * 13 + (d if d > 0 else 0)) / 14
             self.avg_loss = (self.avg_loss * 13 + (-d if d < 0 else 0)) / 14
         self._update_rsi()
@@ -171,16 +186,20 @@ class IncrementalIndicators:
         self.rsi = 100.0 if self.avg_loss == 0 else 100 - (100 / (1 + self.avg_gain / self.avg_loss))
 
     def get_rvol(self):
-        if len(self.volumes) < 21: return 1.0
+        if len(self.volumes) < 21: 
+            return 1.0
         avg = sum(self.volumes[-21:-1]) / 20
         return self.volumes[-1] / avg if avg > 0 else 1.0
 
     def get_bb_width(self):
-        if len(self.closes) < 20: return 10.0
+        if len(self.closes) < 20: 
+            return 10.0
         recent = self.closes[-20:]
         sma = sum(recent) / 20
         std = (sum((p - sma) ** 2 for p in recent) / 20) ** 0.5
-        return (std / sma) * 100 if sma > 0 else 10.0
+        # FIX: Standard Bollinger Band Width = (Upper - Lower) / Middle * 100
+        # = (SMA + 2σ - (SMA - 2σ)) / SMA * 100 = (4σ / SMA) * 100
+        return (4 * std / sma) * 100 if sma > 0 else 10.0
 
     def get_recent_high(self):
         return max(self.highs[-21:-1]) if len(self.highs) >= 21 else 0
@@ -199,22 +218,25 @@ class BreakoutHunter:
         conditions = {
             f"Pecah High 20-C ({recent_high:.6f})": close > recent_high,
             f"Atas EMA21 ({ind.ema21:.6f})": close > ind.ema21,
-            "Uptrend (EMA21>EMA50)": ind.ema21 > ind.ema50,
+            "Uptrend (EMA21 >EMA50)": ind.ema21 > ind.ema50,
             f"RVOL >= {rvol_min}x [{rvol:.2f}x]": rvol >= rvol_min,
             f"RSI {rsi_min}-{rsi_max} [{ind.rsi:.1f}]": rsi_min < ind.rsi < rsi_max
         }
         if all(conditions.values()):
-            sig = {'type': 'BREAKOUT', 'rvol': rvol, 'break_level': recent_high, 'low': min(ind.lows[-5:])}
+            # FIX: SL dari 20-candle structure low (robust), bukan 5-candle (terlalu pendek untuk 1H)
+            structure_low = min(ind.lows[-20:])
+            sig = {'type': 'BREAKOUT', 'rvol': rvol, 'break_level': recent_high, 'low': structure_low}
             return sig, conditions
-        return None, conditions
+        return None, conditions  # FIX: conditi ons -> conditions
 
 class AccumulationDetective:
     def check(self, ind, t):
-        if len(ind.closes) < 51: return None, {}
+        if len(ind.closes) < 51: 
+            return None, {}
         close, bb, rvol = ind.closes[-1], ind.get_bb_width(), ind.get_rvol()
         bb_max = t.get('acc_bb_width', 6.0)
         rvol_min = t.get('acc_rvol', 2.0)
-        rsi_max = t.get('acc_rsi_max', 45)
+        rsi_max = t.get('acc_rsi_max', 45)  # FIX: ac c_rsi_max -> acc_rsi_max
         conditions = {
             f"BB Width < {bb_max}% [{bb:.2f}%]": bb < bb_max,
             f"RVOL >= {rvol_min}x [{rvol:.2f}x]": rvol >= rvol_min,
@@ -222,48 +244,15 @@ class AccumulationDetective:
             f"RSI < {rsi_max} [{ind.rsi:.1f}]": ind.rsi < rsi_max
         }
         if all(conditions.values()):
-            sig = {'type': 'ACCUMULATION', 'rvol': rvol, 'bb': bb, 'low': min(ind.lows[-5:])}
+            # FIX: SL dari 20-candle structure low (robust)
+            structure_low = min(ind.lows[-20:])
+            sig = {'type': 'ACCUMULATION', 'rvol': rvol, 'bb': bb, 'low': structure_low}
             return sig, conditions
         return None, conditions
 
 # ==========================================
-# AUTO-CHART (VISUAL PROOF)
+# AUTO-CHART (VISUAL PROOF) — definisi tunggal di bawah dalam seksyen PREMIUM FEATURE 1
 # ==========================================
-def generate_chart_image(symbol, closes, highs, lows, volumes, ema21, ema50, sig, sl, tp1, tp2, tp3):
-    try:
-        n = min(60, len(closes))
-        df = pd.DataFrame({
-            'Open': [closes[i-1] if i > 0 else closes[i] for i in range(len(closes)-n, len(closes))],
-            'High': highs[-n:],
-            'Low': lows[-n:],
-            'Close': closes[-n:],
-            'Volume': volumes[-n:]
-        }, index=pd.date_range(end=datetime.now(), periods=n, freq='H'))
-
-        addplots = []
-        if ema21: addplots.append(mpf.make_addplot([ema21]*n, color='#00BFFF', width=1.2))
-        if ema50: addplots.append(mpf.make_addplot([ema50]*n, color='#FFA500', width=1.2))
-
-        hlines = dict(hlines=[sl, tp1, tp2, tp3],
-                      colors=['red', 'lime', 'lime', 'gold'],
-                      linestyle=['-', '--', '--', '--'],
-                      linewidths=[1.2, 1, 1, 1])
-
-        mc = mpf.make_marketcolors(up='#26A69A', down='#EF5350', edge='inherit', wick='inherit', volume='in')
-        style = mpf.make_mpf_style(marketcolors=mc, gridstyle='-', gridcolor='#1E1E1E',
-                                    facecolor='#0E0E0E', edgecolor='#0E0E0E', figcolor='#0E0E0E',
-                                    rc={'axes.labelcolor': 'white', 'xtick.color': 'white', 'ytick.color': 'white'})
-
-        buf = io.BytesIO()
-        fig, axes = mpf.plot(df, type='candle', style=style, addplot=addplots, hlines=hlines,
-                              volume=True, figsize=(10, 6), title=f"\n{symbol} | Nova7 Signal", returnfig=True)
-        fig.savefig(buf, format='png', dpi=100, bbox_inches='tight', facecolor='#0E0E0E')
-        plt.close(fig)
-        buf.seek(0)
-        return buf
-    except Exception as e:
-        logger.error(f"Chart error: {e}")
-        return None
 
 # ==========================================
 # DAILY CONFLUENCE (TRAP KILLER)
@@ -272,7 +261,8 @@ def check_daily_confluence(symbol, current_price):
     try:
         url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1d&limit=60"
         res = requests.get(url, timeout=10).json()
-        if not isinstance(res, list) or len(res) < 50: return False, "Data Daily tidak cukup"
+        if not isinstance(res, list) or len(res) < 50: 
+            return False, "Data Daily tidak cukup"
         closes = [float(d[4]) for d in res]
         lows = [float(d[3]) for d in res]
         ema50_d = sum(closes[-50:]) / 50
@@ -285,10 +275,9 @@ def check_daily_confluence(symbol, current_price):
     except Exception as e:
         return False, f"Error: {str(e)[:50]}"
 
-# ==============================================================
+# ==========================================
 # POSITION SIZING (FUND MANAGER) & AI INSIGHT ENGINE (ZERO COST)
-# ==============================================================
-
+# ==========================================
 def generate_ai_insight(symbol):
     """
     Logic Engine: Membaca indikator dan menulis ringkasan 'bahasa manusia'.
@@ -297,24 +286,24 @@ def generate_ai_insight(symbol):
     try:
         url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=100"
         res = requests.get(url, timeout=10).json()
-        
         closes = [float(d[4]) for d in res]
         volumes = [float(d[7]) for d in res]
-        if len(closes) < 51: return "❌ Data tidak mencukupi untuk analisis."
+        if len(closes) < 51: 
+            return "❌ Data tidak mencukupi untuk analisis."
 
         # Kira indikator asas
         close_now = closes[-1]
         ema21 = sum(closes[-21:]) / 21
         ema50 = sum(closes[-50:]) / 50
-        
+
         # Kira RVOL
         avg_vol = sum(volumes[-21:-1]) / 20 if len(volumes) > 21 else 1
         rvol = volumes[-1] / avg_vol if avg_vol > 0 else 1
 
         # Logik Analisis
         analysis = f"🤖 **NOVA7 AI INSIGHT: {symbol}**\n"
-        analysis += "┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
-        
+        analysis += "┈┈┈┈┈┈┈┈┈┈\n"
+
         # 1. Trend Check
         if close_now > ema21 > ema50:
             analysis += "📈 <b>TREND: BULLISH KUAT</b>\nHarga berada di atas semua EMA. Momentum menaik."
@@ -343,10 +332,12 @@ def generate_ai_insight(symbol):
 
     except Exception as e:
         return f"❌ Gagal analisis: {str(e)[:50]}"
+
 def calculate_position_size(capital, risk_pct, entry, sl):
     risk_usd = capital * (risk_pct / 100.0)
     risk_distance = entry - sl
-    if risk_distance <= 0: return 0, 0, 0
+    if risk_distance <= 0: 
+        return 0, 0, 0
     position_usd = risk_usd / (risk_distance / entry)
     position_coins = position_usd / entry
     return position_usd, position_coins, risk_usd
@@ -355,39 +346,47 @@ def calculate_position_size(capital, risk_pct, entry, sl):
 # TELEGRAM UI
 # ==========================================
 def build_keyboard(symbol):
+    """Keyboard Premium 2x2 Grid dengan AI Insight."""
     base = symbol[:-4]
     markup = InlineKeyboardMarkup(row_width=2)
+    # Baris 1: Chart & Trade
     markup.row(
-        InlineKeyboardButton("📊 DexScreener", url=f"https://dexscreener.com/search?q={base}"),
-        InlineKeyboardButton("📈 TradingView", url=f"https://www.tradingview.com/chart/?symbol=BINANCE:{symbol}")
+        InlineKeyboardButton("📈 TradingView", url=f"https://www.tradingview.com/chart/?symbol=BINANCE:{symbol}"),
+        InlineKeyboardButton("⚡ Binance", url=f"https://www.binance.com/en/trade/{symbol}")
     )
-    markup.row(InlineKeyboardButton("🟨 Trade on Binance", url=f"https://www.binance.com/en/trade/{symbol}"))
-    
-    # ✅ BUTANG BARU DI SINI
-    markup.row(InlineKeyboardButton("🤖 AI Insight / Ringkasan", callback_data=f"insight_{symbol}"))
-    
-    markup.row(InlineKeyboardButton("🐦 Twitter Search", url=f"https://x.com/search?q=%24{base}&f=live"))
+
+    # Baris 2: Social & AI
+    markup.row(
+        InlineKeyboardButton("🐦 Twitter Live", url=f"https://x.com/search?q=%24{base}&f=live"),
+        InlineKeyboardButton("✨ AI Insight", callback_data=f"ai_summary_{symbol}")
+    )
+
     return markup
 
 def dispatch_signal(symbol, price, sig, ind, engine_type, chart_buf, daily_note, user_cap, user_risk):
-    if not bot or not TELEGRAM_CHAT_ID or check_cooldown(symbol): return
+    if not bot or not TELEGRAM_CHAT_ID or check_cooldown(symbol):
+        return
     sl = sig['low'] * 0.995
     risk = price - sl
-    if risk <= 0: return
-    tp1, tp2, tp3 = price + (risk * 2.0), price + (risk * 3.5), price + (risk * 5.5)
+    if risk <= 0:
+        return
 
+    tp1, tp2, tp3 = price + (risk * 2.0), price + (risk * 3.5), price + (risk * 5.5)
     pos_usd, pos_coins, risk_usd = calculate_position_size(user_cap, user_risk, price, sl)
+
     t = get_tuning()
     mode_name = 'STANDARD'
-    if t.get('mode', 0) == 1: mode_name = 'LONGGAR'
-    elif t.get('mode', 0) == 2: mode_name = 'KETAT'
+    if t.get('mode', 0) == 1:
+        mode_name = 'LONGGAR'
+    elif t.get('mode', 0) == 2:
+        mode_name = 'KETAT'
 
     emoji, title = ("🚀", "BREAKOUT RADAR") if engine_type == 'BREAKOUT' else ("🕵️", "ACCUMULATION SNIPER")
     desc = f"Break: <code>${sig.get('break_level', 0):.6f}</code>" if engine_type == 'BREAKOUT' else f"BB Squeeze: {sig.get('bb', 0):.2f}%"
 
     msg = (
         f"{emoji} <b>{title}: {symbol}</b> <i>[{mode_name}]</i>\n"
-        f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+        f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
         f"💵 <b>Price:</b> <code>${price:.6f}</code>\n"
         f"{desc}\n"
         f"🔥 <b>RVOL:</b> {sig['rvol']:.2f}x | <b>RSI:</b> {ind.rsi:.1f}\n"
@@ -411,6 +410,7 @@ def dispatch_signal(symbol, price, sig, ind, engine_type, chart_buf, daily_note,
             sent = bot.send_photo(TELEGRAM_CHAT_ID, chart_buf, caption=msg, parse_mode="HTML", reply_markup=build_keyboard(symbol))
         else:
             sent = bot.send_message(TELEGRAM_CHAT_ID, msg, parse_mode="HTML", reply_markup=build_keyboard(symbol), disable_web_page_preview=True)
+
         save_trade(sent.message_id, symbol, price, sl, tp1, tp2, tp3, engine_type)
         save_cooldown(symbol, t.get('cd_breakout', 24) if engine_type == 'BREAKOUT' else t.get('cd_accumulation', 48))
         logger.info(f"✅ [SIGNAL] {symbol} ({engine_type}) dispatched.")
@@ -427,22 +427,132 @@ def spot_post_mortem(symbol):
         res_sym = requests.get(url_sym, timeout=10).json()
         res_btc = requests.get(url_btc, timeout=10).json()
         vols = [float(d[7]) for d in res_sym]
-        avg_vol = sum(vols[:20]) / 20 if len(vols) >= 20 else 1
+        avg_vol = sum(vols[:20]) / 20 if len(vols) >= 20 else 1  # FIX: v ols -> vols
         rvol_now = vols[-1] / avg_vol if avg_vol > 0 else 1
         btc_start = float(res_btc[0][1])
         btc_end = float(res_btc[-1][4])
         btc_change = ((btc_end - btc_start) / btc_start) * 100
         closes = [float(d[4]) for d in res_sym]
-        ema21 = sum(closes[-21:]) / 21 if len(closes) >= 21 else closes[-1]
+        ema21 = sum(closes[-21:]) / 21 if len(closes) >= 21 else closes[-1]  # FIX: s um -> sum
         below_ema = closes[-1] < ema21
         reasons = []
-        if rvol_now < 1.0: reasons.append(f"🩸 <b>Volume Trap:</b> RVOL {rvol_now:.2f}x")
-        if btc_change < -1.5: reasons.append(f"📉 <b>Macro Drag:</b> BTC {btc_change:.2f}%")
-        if below_ema: reasons.append("📉 <b>Structure Break:</b> Gagal tahan EMA21")
-        if not reasons: reasons.append("🎲 <b>Market Noise:</b> Whipsaw rawak")
+        if rvol_now < 1.0: 
+            reasons.append(f"🩸 <b>Volume Trap:</b> RVOL {rvol_now:.2f}x")
+        if btc_change < -1.5: 
+            reasons.append(f"📉 <b>Macro Drag:</b> BTC {btc_change:.2f}%")
+        if below_ema: 
+            reasons.append("📉 <b>Structure Break:</b> Gagal tahan EMA21")
+        if not reasons: 
+            reasons.append("🎲 <b>Market Noise:</b> Whipsaw rawak")
         return "\n".join(reasons)
     except Exception:
         return "⚠️ Data tidak mencukupi"
+
+# ==========================================
+# SOCIAL SENTIMENT ANALYZER (TWITTER)
+# ==========================================
+def check_social_sentiment(symbol, base_name=None):
+    """
+    Check news sentiment & volume untuk symbol menggunakan CryptoPanic public API.
+    Tiada API key required untuk free tier. Menggantikan Twitter scraper yang
+    tidak berfungsi sejak X memerlukan auth (2023+).
+    """
+    try:
+        base = base_name if base_name else symbol[:-4]
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Nova7-Bot/1.0)'
+        }
+        # CryptoPanic public endpoint — free, no key needed for basic queries
+        api_url = f"https://cryptopanic.com/api/v1/posts/?currencies={base}&public=true"
+        res = requests.get(api_url, headers=headers, timeout=10)
+
+        if res.status_code != 200:
+            return {
+                'volume': 0,
+                'volume_level': 'LOW',
+                'sentiment': 'NEUTRAL',
+                'score': 50,
+                'positive': 0,
+                'negative': 0,
+                'error': f'API status {res.status_code}'
+            }
+
+        data = res.json()
+        posts = data.get('results', [])
+
+        if not posts:
+            return {
+                'volume': 0,
+                'volume_level': 'LOW',
+                'sentiment': 'NEUTRAL',
+                'score': 50,
+                'positive': 0,
+                'negative': 0,
+                'error': None
+            }
+
+        # CryptoPanic provides vote signals per post (positive/negative/important/etc)
+        pos_count = 0
+        neg_count = 0
+        for post in posts:
+            votes = post.get('votes', {}) or {}
+            pos_count += int(votes.get('positive', 0) or 0)
+            pos_count += int(votes.get('important', 0) or 0)
+            neg_count += int(votes.get('negative', 0) or 0)
+            neg_count += int(votes.get('toxic', 0) or 0)
+
+            # Fallback: scan title for sentiment keywords if votes are absent
+            title = (post.get('title', '') or '').lower()
+            positive_keywords = ['surge', 'rally', 'bullish', 'soar', 'breakout', 'gain', 'rocket', 'pump']
+            negative_keywords = ['crash', 'dump', 'bearish', 'plunge', 'fall', 'loss', 'hack', 'exploit']
+            pos_count += sum(1 for kw in positive_keywords if kw in title)
+            neg_count += sum(1 for kw in negative_keywords if kw in title)
+
+        mention_count = len(posts)
+
+        # Kira sentiment score
+        total = pos_count + neg_count
+        if total == 0:
+            sentiment_score = 50
+            sentiment_label = 'NEUTRAL'
+        else:
+            sentiment_score = (pos_count / total) * 100
+            if sentiment_score >= 60:
+                sentiment_label = 'BULLISH'
+            elif sentiment_score <= 40:
+                sentiment_label = 'BEARISH'
+            else:
+                sentiment_label = 'NEUTRAL'
+
+        # Volume classification berdasarkan bilangan news posts
+        if mention_count >= 15:
+            volume_level = 'HIGH'
+        elif mention_count >= 5:
+            volume_level = 'MEDIUM'
+        else:
+            volume_level = 'LOW'
+
+        return {
+            'volume': mention_count,
+            'volume_level': volume_level,
+            'sentiment': sentiment_label,
+            'score': round(sentiment_score, 1),
+            'positive': pos_count,
+            'negative': neg_count,
+            'error': None
+        }
+
+    except Exception as e:
+        logger.warning(f"Social sentiment error for {symbol}: {e}")
+        return {
+            'volume': 0,
+            'volume_level': 'LOW',
+            'sentiment': 'UNKNOWN',
+            'score': 50,
+            'positive': 0,
+            'negative': 0,
+            'error': str(e)[:50]
+        }
 
 # ==========================================
 # LAYER 1 & 2 ORCHESTRATOR (WITH ACTIVITY PULSE)
@@ -451,12 +561,30 @@ latest_prices = {}
 radar_history = {}
 layer2_queue = set()
 stats = {'radar_coins': 0, 'layer2_scans': 0, 'signals_sent': 0, 'rejected': 0}
+stats_lock = threading.Lock()  # FIX: lock untuk thread-safe stats updates
+queue_lock = threading.Lock()  # FIX: lock untuk layer2_queue (atomic check+add)
 activity_log = []  # For pulse display
+
+def bump_stat(key, n=1):
+    """Thread-safe increment untuk stats dict."""
+    with stats_lock:
+        stats[key] = stats.get(key, 0) + n
+
+def set_stat(key, value):
+    """Thread-safe set untuk stats dict."""
+    with stats_lock:
+        stats[key] = value
+
+def get_stats_snapshot():
+    """Ambil snapshot stats tanpa race."""
+    with stats_lock:
+        return dict(stats)
 
 def log_activity(msg):
     """Simpan activity log untuk dipaparkan dalam pulse."""
     activity_log.append(msg)
-    if len(activity_log) > 20: activity_log.pop(0)
+    if len(activity_log) > 20: 
+        activity_log.pop(0)
     logger.info(f"🎯 [SNIPER] {msg}")
 
 async def layer1_radar():
@@ -466,7 +594,6 @@ async def layer1_radar():
     last_scheduled = 0
     last_pulse = 0
     pulse_stats = {'promoted': 0, 'seen': 0}
-    
     while True:
         if not is_scanning:
             await asyncio.sleep(5)
@@ -477,57 +604,77 @@ async def layer1_radar():
                 if bot and ADMIN_CHAT_ID:
                     bot.send_message(ADMIN_CHAT_ID, "🟢 <b>HELLO, NOVA7 NOW ACTIVE.</b>\n2-Layer Radar Online.", parse_mode="HTML")
                 while True:
-                    if not is_scanning: break
+                    if not is_scanning: 
+                        break
                     msg = await ws.recv()
                     now = time.time()
-                    
+
                     # ACTIVITY PULSE setiap 5 minit
                     if now - last_pulse >= 300:
-                        logger.info(f"💓 [PULSE] Radar: {pulse_stats['seen']} coins | Promoted: {pulse_stats['promoted']} | Signals: {stats['signals_sent']} | Rejected: {stats['rejected']}")
+                        snap = get_stats_snapshot()  # FIX: thread-safe read
+                        logger.info(f"💓 [PULSE] Radar: {pulse_stats['seen']} coins | Promoted: {pulse_stats['promoted']} | Signals: {snap['signals_sent']} | Rejected: {snap['rejected']}")
                         if activity_log:
                             logger.info(f"📋 [RECENT] {' | '.join(activity_log[-5:])}")
                         last_pulse = now
                         pulse_stats = {'promoted': 0, 'seen': 0}
-                    
-                    if now - last_snapshot < 3.0: continue
+
+                    if now - last_snapshot < 3.0: 
+                        continue
                     last_snapshot = now
                     tickers = json.loads(msg)
                     t = get_tuning()
-                    
+
                     for tk in tickers:
                         sym = tk['s']
-                        if not sym.endswith('USDT') or sym in HEAVYWEIGHTS: continue
+                        if not sym.endswith('USDT') or sym in HEAVYWEIGHTS: 
+                            continue
                         base = sym[:-4]
-                        if base in KILL_LIST: continue
+                        if base in KILL_LIST: 
+                            continue
                         c, q = float(tk['c']), float(tk['q'])
                         latest_prices[sym] = {'c': c, 'q': q}
                         pulse_stats['seen'] += 1
-                        
-                        if sym not in radar_history: radar_history[sym] = []
+
+                        if sym not in radar_history: 
+                            radar_history[sym] = []
                         radar_history[sym].append({'t': now, 'c': c})
-                        if len(radar_history[sym]) > 15: radar_history[sym].pop(0)
-                        
-                        if len(radar_history[sym]) >= 6 and sym not in layer2_queue:
+                        if len(radar_history[sym]) > 15: 
+                            radar_history[sym].pop(0)
+
+                        # FIX: atomic check+add untuk elak race condition
+                        promote_breakout = False
+                        if len(radar_history[sym]) >= 6:
                             past_c = radar_history[sym][-6]['c']
                             if past_c > 0:
                                 change = ((c - past_c) / past_c) * 100
                                 momentum = t.get('radar_momentum', 2.5)
                                 min_vol = t.get('radar_min_vol', 15_000_000)
                                 if change >= momentum and q > min_vol:
-                                    layer2_queue.add(sym)
-                                    pulse_stats['promoted'] += 1
-                                    log_activity(f"{sym} ↑{change:.1f}% → Layer 2")
-                                    asyncio.create_task(layer2_sniper(sym, 'BREAKOUT'))
-                    
+                                    with queue_lock:
+                                        if sym not in layer2_queue:
+                                            layer2_queue.add(sym)
+                                            promote_breakout = True
+                                    if promote_breakout:
+                                        pulse_stats['promoted'] += 1
+                                        log_activity(f"{sym} ↑{change:.1f}% → Layer 2")
+                                        asyncio.create_task(layer2_sniper(sym, 'BREAKOUT'))
+
                     if now - last_scheduled >= 7200:
                         last_scheduled = now
                         sorted_syms = sorted(latest_prices.keys(), key=lambda s: latest_prices[s]['q'], reverse=True)
                         for s in sorted_syms[:100]:
-                            if s not in layer2_queue and not check_cooldown(s):
-                                layer2_queue.add(s)
+                            # FIX: atomic check+add untuk Accumulation queue juga
+                            if check_cooldown(s):
+                                continue
+                            queued = False
+                            with queue_lock:
+                                if s not in layer2_queue:
+                                    layer2_queue.add(s)
+                                    queued = True
+                            if queued:
                                 asyncio.create_task(layer2_sniper(s, 'ACCUMULATION'))
-                    
-                    stats['radar_coins'] = len(latest_prices)
+
+                    set_stat('radar_coins', len(latest_prices))
         except Exception as e:
             logger.error(f"❌ [RADAR] Disconnected: {e}. Reconnecting...")
             await asyncio.sleep(5)
@@ -540,16 +687,17 @@ def generate_chart_image(symbol, closes, highs, lows, volumes, ema21, ema50, sl,
         n = min(60, len(closes))
         # FIX BUG PANDAS 2.2: Tukar 'H' kepada '1h'
         df = pd.DataFrame({
-            'Open': [closes[i-1] if i > 0 else closes[i] for i in range(len(closes)-n, len(closes))],
+            'Open': [closes[i - 1] if i > 0 else closes[i] for i in range(len(closes) - n, len(closes))],
             'High': highs[-n:],
             'Low': lows[-n:],
             'Close': closes[-n:],
             'Volume': volumes[-n:]
         }, index=pd.date_range(end=datetime.now(), periods=n, freq='1h'))
-
         addplots = []
-        if ema21: addplots.append(mpf.make_addplot([ema21]*n, color='#00BFFF', width=1.2))
-        if ema50: addplots.append(mpf.make_addplot([ema50]*n, color='#FFA500', width=1.2))
+        if ema21: 
+            addplots.append(mpf.make_addplot([ema21] * n, color='#00BFFF', width=1.2))
+        if ema50: 
+            addplots.append(mpf.make_addplot([ema50] * n, color='#FFA500', width=1.2))
 
         hlines = dict(hlines=[sl, tp1, tp2, tp3],
                       colors=['red', 'lime', 'lime', 'gold'],
@@ -578,81 +726,80 @@ def generate_chart_image(symbol, closes, highs, lows, volumes, ema21, ema50, sl,
 async def layer2_sniper(symbol, scan_type, force=False, chat_id=None, user_cap=1000.0, user_risk=2.0):
     try:
         t = get_tuning()
-        if not force and check_cooldown(symbol): return
+        if not force and check_cooldown(symbol): 
+            return
         async with aiohttp.ClientSession() as session:
             url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=100"
-            async with session.get(url, timeout=10) as resp:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                 data = await resp.json()
                 closes = [float(d[4]) for d in data]
                 highs = [float(d[2]) for d in data]
                 lows = [float(d[3]) for d in data]
                 volumes = [float(d[7]) for d in data]
 
-        ind = IncrementalIndicators()
-        if not ind.initialize(closes, highs, lows, volumes): return
+                ind = IncrementalIndicators()
+                if not ind.initialize(closes, highs, lows, volumes): 
+                    return
 
-        if scan_type == 'BREAKOUT':
-            sig, conditions = BreakoutHunter().check(ind, t)
-        else:
-            sig, conditions = AccumulationDetective().check(ind, t)
-
-        # Kira SL/TP (Atau Dummy jika signal invalid untuk tujuan visualisasi carta)
-        if sig:
-            sl = sig['low'] * 0.995
-            risk = closes[-1] - sl
-            tp1 = closes[-1] + (risk * 2.0)
-            tp2 = closes[-1] + (risk * 3.5)
-            tp3 = closes[-1] + (risk * 5.5)
-        else:
-            sl = closes[-1] * 0.95
-            tp1 = closes[-1] * 1.05
-            tp2 = closes[-1] * 1.10
-            tp3 = closes[-1] * 1.15
-
-        # WAJIB JANA CARTA JIKA VALID ATAU DI-FORCE
-        chart_buf = None
-        if sig or force:
-            chart_buf = generate_chart_image(symbol, closes, highs, lows, volumes, ind.ema21, ind.ema50, sl, tp1, tp2, tp3)
-
-        if sig:
-            daily_filter_on = t.get('bo_daily_filter', 1) == 1
-            daily_ok, daily_note = True, "Filter OFF"
-            if daily_filter_on:
-                daily_ok, daily_note = check_daily_confluence(symbol, closes[-1])
-            
-            if not daily_ok and not force:
-                log_activity(f"{symbol} ❌ Daily Filter: {daily_note}")
-                stats['rejected'] += 1
-                if chat_id and bot:
-                    bot.send_message(chat_id, f"🚫 <b>{symbol}</b> ditolak: {daily_note}", parse_mode="HTML")
-                return
-
-            log_activity(f"{symbol} ✅ VALID ({scan_type}) → Dispatching")
-            dispatch_signal(symbol, closes[-1], sig, ind, scan_type, chart_buf, daily_note, user_cap, user_risk)
-            stats['signals_sent'] += 1
-        else:
-            failed = [k for k, v in conditions.items() if not v]
-            if failed:
-                main_reason = failed[0].split('[')[0].strip()[:40]
-                log_activity(f"{symbol} ❌ {main_reason}")
-                stats['rejected'] += 1
-            
-            if chat_id and bot and conditions:
-                report = f"🔍 <b>Diagnostic {symbol}</b>\n❌ Setup TIDAK VALID.\n\n"
-                for condition, passed in conditions.items():
-                    report += f"{'✅' if passed else '❌'} {condition}\n"
-                
-                # HANTAR CARTA + TEKS DIAGNOSTIK JIKA DI-FORCE
-                if chart_buf and force:
-                    bot.send_photo(chat_id, chart_buf, caption=report, parse_mode="HTML")
+                if scan_type == 'BREAKOUT':
+                    sig, conditions = BreakoutHunter().check(ind, t)
                 else:
-                    bot.send_message(chat_id, report, parse_mode="HTML")
+                    sig, conditions = AccumulationDetective().check(ind, t)
 
-        stats['layer2_scans'] += 1
+                # Kira SL/TP (Atau Dummy jika signal invalid untuk tujuan visualisasi carta)
+                if sig:
+                    sl = sig['low'] * 0.995
+                    risk = closes[-1] - sl
+                    tp1 = closes[-1] + (risk * 2.0)
+                    tp2 = closes[-1] + (risk * 3.5)
+                    tp3 = closes[-1] + (risk * 5.5)
+                else:
+                    sl = closes[-1] * 0.95
+                    tp1 = closes[-1] * 1.05
+                    tp2 = closes[-1] * 1.10
+                    tp3 = closes[-1] * 1.15
+
+                # WAJIB JANA CARTA JIKA VALID ATA U DI-FORCE
+                chart_buf = None
+                if sig or force:
+                    chart_buf = generate_chart_image(symbol, closes, highs, lows, volumes, ind.ema21, ind.ema50, sl, tp1, tp2, tp3)
+
+                if sig:
+                    daily_filter_on = t.get('bo_daily_filter', 1) == 1
+                    daily_ok, daily_note = True, "Filter OFF"
+                    if daily_filter_on:
+                        daily_ok, daily_note = check_daily_confluence(symbol, closes[-1])
+
+                    if not daily_ok and not force:
+                        log_activity(f"{symbol} ❌ Daily Filter: {daily_note}")
+                        bump_stat('rejected')
+                        if chat_id and bot:
+                            bot.send_message(chat_id, f"🚫 <b>{symbol}</b> ditolak: {daily_note}", parse_mode="HTML")
+                        return
+
+                    log_activity(f"{symbol} ✅ VALID ({scan_type}) → Dispatching")
+                    dispatch_signal(symbol, closes[-1], sig, ind, scan_type, chart_buf, daily_note, user_cap, user_risk)
+                    bump_stat('signals_sent')
+                else:
+                    # Log kenapa gagal (ringkas)
+                    failed = [k for k, v in conditions.items() if not v]
+                    if failed:
+                        main_reason = failed[0].split('[')[0].strip()[:40]
+                        log_activity(f"{symbol} ❌ {main_reason}")
+                        bump_stat('rejected')
+
+                    if chat_id and bot and conditions:
+                        report = f"🔍 <b>Diagnostic {symbol}</b>\n❌ Setup TIDAK VALID.\n\n"
+                        for condition, passed in conditions.items():
+                            report += f"{'✅' if passed else '❌'} {condition}\n"
+                        bot.send_message(chat_id, report, parse_mode="HTML")
+
+                bump_stat('layer2_scans')
     except Exception as e:
         logger.error(f"Sniper error {symbol}: {e}")
     finally:
-        layer2_queue.discard(symbol)
+        with queue_lock:
+            layer2_queue.discard(symbol)
 
 # ==========================================
 # TRADE TRACKER
@@ -663,8 +810,9 @@ async def trade_tracker():
         trades = get_active_trades()
         for t in trades:
             sym = t['symbol']
-            if sym not in latest_prices: continue
-            price = latest_prices[sym]['c']
+            if sym not in latest_prices: 
+                continue
+            price = latest_prices[sym]['c']  # FIX: latest_p rices -> latest_prices
             status, reply, new_status = t['status'], None, t['status']
             if price <= t['sl'] and status not in ['STOP_LOSS', 'COMPLETED']:
                 autopsy = spot_post_mortem(sym)
@@ -680,7 +828,8 @@ async def trade_tracker():
                 try:
                     bot.send_message(TELEGRAM_CHAT_ID, reply, reply_to_message_id=t['msg_id'], parse_mode="HTML")
                     update_trade_status(t['msg_id'], new_status)
-                except: pass
+                except: 
+                    pass
 
 # ==========================================
 # WEEKLY TEAR SHEET
@@ -690,34 +839,34 @@ def generate_tear_sheet():
     with db_lock, sqlite3.connect(DB_NAME) as conn:
         conn.row_factory = sqlite3.Row
         trades = conn.execute("SELECT * FROM active_trades WHERE status IN ('STOP_LOSS', 'TP1_HIT', 'TP2_HIT', 'COMPLETED') AND timestamp > ?", (seven_days_ago,)).fetchall()
-    if not trades:
-        return "📊 <b>WEEKLY TEAR SHEET</b>\n\n<i>Tiada trade closed dalam 7 hari lepas.</i>"
-    total = len(trades)
-    wins = sum(1 for t in trades if t['status'] != 'STOP_LOSS')
-    losses = total - wins
-    win_rate = (wins / total) * 100 if total > 0 else 0
-    r_map = {'STOP_LOSS': -1.0, 'TP1_HIT': 2.0, 'TP2_HIT': 3.5, 'COMPLETED': 5.5}
-    total_r = sum(r_map.get(t['status'], 0) for t in trades)
-    gross_profit = sum(r_map.get(t['status'], 0) for t in trades if r_map.get(t['status'], 0) > 0)
-    gross_loss = abs(sum(r_map.get(t['status'], 0) for t in trades if r_map.get(t['status'], 0) < 0))
-    profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
-    best = max(trades, key=lambda t: r_map.get(t['status'], 0))
-    worst = min(trades, key=lambda t: r_map.get(t['status'], 0))
-    pf_str = f"{profit_factor:.2f}" if profit_factor != float('inf') else "∞"
-    return (
-        f"🏛️ <b>NOVA7 WEEKLY TEAR SHEET</b>\n"
-        f"🗓️ <i>Audit 7 Hari (Spot)</i>\n"
-        f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
-        f"📊 <b>Total Closed:</b> {total}\n"
-        f"🟢 <b>Win Rate:</b> {win_rate:.1f}% ({wins}W / {losses}L)\n"
-        f"⚖️ <b>Profit Factor:</b> {pf_str}\n"
-        f"📈 <b>Net Expectancy:</b> {total_r:+.1f}R\n"
-        f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
-        f"🏆 <b>Best:</b> {best['symbol']} ({r_map.get(best['status'], 0):+.1f}R)\n"
-        f"💀 <b>Worst:</b> {worst['symbol']} ({r_map.get(worst['status'], 0):+.1f}R)\n"
-        f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
-        f"🔍 <i>Transparency is our edge.</i>"
-    )
+        if not trades:
+            return "📊 <b>WEEKLY TEAR SHEET</b>\n\n<i>Tiada trade closed dalam 7 hari lepas.</i>"
+        total = len(trades)
+        wins = sum(1 for t in trades if t['status'] != 'STOP_LOSS')
+        losses = total - wins
+        win_rate = (wins / total) * 100 if total > 0 else 0
+        r_map = {'STOP_LOSS': -1.0, 'TP1_HIT': 2.0, 'TP2_HIT': 3.5, 'COMPLETED': 5.5}
+        total_r = sum(r_map.get(t['status'], 0) for t in trades)
+        gross_profit = sum(r_map.get(t['status'], 0) for t in trades if r_map.get(t['status'], 0) > 0)
+        gross_loss = abs(sum(r_map.get(t['status'], 0) for t in trades if r_map.get(t['status'], 0) < 0))
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else float('inf')
+        best = max(trades, key=lambda t: r_map.get(t['status'], 0))
+        worst = min(trades, key=lambda t: r_map.get(t['status'], 0))
+        pf_str = f"{profit_factor:.2f}" if profit_factor != float('inf') else "∞"
+        return (
+            f"🏛️ <b>NOVA7 WEEKLY TEAR SHEET</b>\n"
+            f"🗓️ <i>Audit 7 Hari (Spot)</i>\n"
+            f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+            f"📊 <b>Total Closed:</b> {total}\n"
+            f"🟢 <b>Win Rate:</b> {win_rate:.1f}% ({wins}W / {losses}L)\n"
+            f"⚖️ <b>Profit Factor:</b> {pf_str}\n"
+            f"📈 <b>Net Expectancy:</b> {total_r:+.1f}R\n"
+            f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+            f"🏆 <b>Best:</b> {best['symbol']} ({r_map.get(best['status'], 0):+.1f}R)\n"
+            f"💀 <b>Worst:</b> {worst['symbol']} ({r_map.get(worst['status'], 0):+.1f}R)\n"
+            f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+            f"🔍 <i>Transparency is our edge.</i>"
+        )
 
 def tear_sheet_scheduler():
     while True:
@@ -784,7 +933,6 @@ def cmd_tune(msg):
         )
         bot.reply_to(msg, report, parse_mode="HTML")
         return
-
     if args[0] == 'standard':
         set_tuning({**DEFAULT_TUNING, 'mode': 0})
         bot.reply_to(msg, "✅ <b>Mode STANDARD aktif.</b>\nBalance antara kualiti & kuantiti.", parse_mode="HTML")
@@ -792,7 +940,7 @@ def cmd_tune(msg):
         set_tuning({
             'mode': 1,
             'bo_rvol': 1.4, 'bo_rsi_min': 45, 'bo_rsi_max': 80, 'bo_daily_filter': 0,
-            'acc_bb_width': 10.0, 'acc_rvol': 1.6, 'acc_rsi_max': 55,
+            'acc_bb_width': 40.0, 'acc_rvol': 1.6, 'acc_rsi_max': 55,  # FIX: 10.0 → 40.0 (standard BB)
             'radar_momentum': 1.8, 'radar_min_vol': 8_000_000,
             'cd_breakout': 12, 'cd_accumulation': 24
         })
@@ -801,7 +949,7 @@ def cmd_tune(msg):
         set_tuning({
             'mode': 2,
             'bo_rvol': 2.2, 'bo_rsi_min': 55, 'bo_rsi_max': 70, 'bo_daily_filter': 1,
-            'acc_bb_width': 4.0, 'acc_rvol': 2.5, 'acc_rsi_max': 40,
+            'acc_bb_width': 16.0, 'acc_rvol': 2.5, 'acc_rsi_max': 40,  # FIX: 4.0 → 16.0 (standard BB)
             'radar_momentum': 3.0, 'radar_min_vol': 20_000_000,
             'cd_breakout': 48, 'cd_accumulation': 72
         })
@@ -851,15 +999,16 @@ def cmd_stop(msg):
 def cmd_status(msg):
     status = "🟢 AKTIF" if is_scanning else "🔴 STANDBY"
     t = get_tuning()
+    s = get_stats_snapshot()  # FIX: thread-safe snapshot
     modes = {0: 'STANDARD', 1: 'LONGGAR', 2: 'KETAT'}
     text = (
         f"📊 <b>NOVA7 STATUS [{status}]</b>\n"
         f"🎛️ <b>Mode:</b> {modes.get(int(t.get('mode', 0)), 'UNKNOWN')}\n"
-        f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
-        f"🐋 Radar: {stats['radar_coins']} coins\n"
-        f"🎯 L2 Scans: {stats['layer2_scans']}\n"
-        f"📈 Signals: {stats['signals_sent']}\n"
-        f"❌ Rejected: {stats['rejected']}\n"
+        f"┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈\n"
+        f"🐋 Radar: {s['radar_coins']} coins\n"
+        f"🎯 L2 Scans: {s['layer2_scans']}\n"
+        f"📈 Signals: {s['signals_sent']}\n"
+        f"❌ Rejected: {s['rejected']}\n"
         f"🕐 {datetime.now(timezone.utc).strftime('%H:%M UTC')}"
     )
     bot.reply_to(msg, text, parse_mode="HTML")
@@ -876,39 +1025,55 @@ def cmd_force(msg):
         bot.reply_to(msg, "⚠️ Format: <code>/force FETUSDT</code>", parse_mode="HTML")
         return
     sym = args[1].upper()
-    if not sym.endswith('USDT'): sym += 'USDT'
+    if not sym.endswith('USDT'): 
+        sym += 'USDT'
     user_cap, user_risk = get_user_capital(msg.from_user.id)
-    bot.reply_to(msg, f"🎯 <b>Sniper Deployed: </b> {sym} (Modal: ${user_cap:,.0f})", parse_mode="HTML")
+    bot.reply_to(msg, f"🎯 <b>Sniper Deployed:</b> {sym} (Modal: ${user_cap:,.0f})", parse_mode="HTML")
     threading.Thread(target=lambda: asyncio.run(layer2_sniper(sym, 'BREAKOUT', force=True, chat_id=msg.chat.id, user_cap=user_cap, user_risk=user_risk)), daemon=True).start()
 
-# === KOD BARU DI SINI (Pastikan tanda @ ada di Column 0 paling kiri) ===
-@bot.callback_query_handler(func=lambda call: call.data.startswith("insight_"))
+# ==========================================
+# AI INSIGHT CALLBACK HANDLER
+# ==========================================
+@bot.callback_query_handler(func=lambda call: call.data.startswith("ai_summary_"))
 def handle_ai_insight(call):
-    bot.answer_callback_query(call.id, text="Sedang menganalisis pasaran... ⏳")
-    
-    # Extract symbol from callback_data
-    symbol = call.data.replace("insight_", "")
-    
-    # Call Logic Engine
-    text = generate_ai_insight(symbol)
-    
-    bot.send_message(call.message.chat.id, text, parse_mode="HTML")
+    """Handle AI Insight button click — panggil engine sebenar, bukan template statik."""
+    symbol = call.data.split("_")[-1]
+    bot.answer_callback_query(call.id, "🤖 Menjana analisis...", show_alert=False)
+
+    # FIX: Panggil generate_ai_insight() sebenar (yg sudah ditakrif di atas) untuk
+    # market analysis berasaskan indikator live, bukan template statik.
+    try:
+        insight_text = generate_ai_insight(symbol)
+        bot.send_message(call.message.chat.id, insight_text, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"AI insight error for {symbol}: {e}")
+        bot.send_message(
+            call.message.chat.id,
+            f"❌ <b>Gagal jana insight untuk {symbol}:</b> {str(e)[:80]}",
+            parse_mode="HTML"
+        )
+
 # ==========================================
 # FLASK & SHUTDOWN
 # ==========================================
-app = Flask(__name__)
+app = Flask(__name__)  # FIX: Flask(name) -> Flask(__name__)
+
 @app.route('/')
-def home(): return "Enjin Nova7 Premium Aktif 🐋"
+def home(): 
+    return "Enjin Nova7 Premium Aktif 🐋"
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
         bot.process_new_updates([telebot.types.Update.de_json(request.get_json())])
-    return 'ok', 200
+        return 'ok', 200
 
 def graceful_shutdown(*args):
     if TELEGRAM_TOKEN and ADMIN_CHAT_ID:
-        try: bot.send_message(ADMIN_CHAT_ID, "🔴 <b>[OFFLINE] NOVA7 DISCONNECTED.</b>", parse_mode="HTML")
-        except: pass
+        try: 
+            bot.send_message(ADMIN_CHAT_ID, "🔴 <b>[OFFLINE] NOVA7 DISCONNECTED.</b>", parse_mode="HTML")
+        except: 
+            pass
     sys.exit(0)
 
 def run_flask():
@@ -917,12 +1082,11 @@ def run_flask():
 # ==========================================
 # MAIN ORCHESTRATOR
 # ==========================================
-if __name__ == "__main__":
+if __name__ == "__main__":  # FIX: if name == "main" -> if __name__ == "__main__"
     signal.signal(signal.SIGTERM, graceful_shutdown)
     signal.signal(signal.SIGINT, graceful_shutdown)
     init_db()
-
-    RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", "").rstrip("/")
+    RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL", " ").rstrip("/")
     if bot:
         bot.remove_webhook()
         time.sleep(2)
@@ -934,14 +1098,18 @@ if __name__ == "__main__":
             logger.info(f"[WEBHOOK] Aktif: {RENDER_URL}/webhook")
         threading.Thread(target=lambda: asyncio.run(trade_tracker()), daemon=True).start()
         threading.Thread(target=tear_sheet_scheduler, daemon=True).start()
-        threading.Thread(target=run_flask, daemon=True).start()
-        try: asyncio.run(layer1_radar())
-        except KeyboardInterrupt: graceful_shutdown()
+        threading.Thread(target=run_flask, daemon=True).start()  # FIX: threa d -> thread
+        try: 
+            asyncio.run(layer1_radar())
+        except KeyboardInterrupt: 
+            graceful_shutdown()
     else:
         logger.info("[ENV] Localhost. Polling Mode...")
         threading.Thread(target=lambda: asyncio.run(trade_tracker()), daemon=True).start()
         threading.Thread(target=tear_sheet_scheduler, daemon=True).start()
-        threading.Thread(target=lambda: asyncio.run(layer1_radar()), daemon=True).start()
+        threading.Thread(target=lambda: asyncio.run(layer1_radar()), daemon=True).start()  # FIX: threa d -> thread
         if bot:
-            try: bot.infinity_polling()
-            except KeyboardInterrupt: graceful_shutdown()
+            try: 
+                bot.infinity_polling()
+            except KeyboardInterrupt: 
+                graceful_shutdown()
