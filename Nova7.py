@@ -404,6 +404,158 @@ class BreakoutHunter:
             return sig, conditions
         return None, conditions
 
+# ==========================================
+# RETEST HUNTER ENGINE — Entry di Zon Support/Resistance
+# ==========================================
+class RetestHunter:
+    """
+    Tangkap entry yang LEBIH AWAL dari breakout biasa.
+    Scenario: Harga pecah resistance → pullback ke level yang sama
+    (kini jadi support) → wick rejection candle di situ = ENTRY PREMIUM.
+
+    Ini adalah scenario INJ $6.0 — resistance lama, retest, wick, naik semula.
+
+    MATEMATIK:
+    1. Cari resistance cluster — kawasan di mana ≥3 candle highs berkumpul
+       dalam tolerance ±0.8% (equal highs = liquidity pool)
+
+    2. Sahkan breakout — close semasa mesti pernah naik ≥1.5% atas cluster
+       dalam 8 candle terkini (breakout berlaku baru-baru ini)
+
+    3. Retest — harga kembali ke dalam ±1.5% dari level resistance lama
+       (sekarang jadi support)
+
+    4. Wick Rejection — lower wick ≥ 55% daripada julat candle penuh
+       Lower wick = min(open, close) - low
+       Total range = high - low
+       Wick ratio = lower_wick / total_range
+
+    5. Volume — RVOL semasa ≤ 1.8x (volume tidak spike = bukan fakeout,
+       selling pressure telah habis di zon tersebut)
+
+    6. RSI — 40–65 (tidak oversold, tidak overbought — kawasan momentum awal)
+
+    KENAPA LEBIH BAIK DARI BREAKOUT ENTRY:
+    Breakout entry = harga dah naik 3–5% dari base
+    Retest entry = entry hampir sama dengan harga breakout asal
+    Hasil: SL lebih ketat, RR lebih baik untuk move yang sama
+    """
+
+    def _find_resistance_cluster(self, highs, tolerance=0.008):
+        """
+        Cari kawasan di mana ≥3 highs berkumpul dalam ±0.8%.
+        Return senarai {'level': float, 'count': int, 'idx_last': int}
+        """
+        clusters = []
+        used = set()
+        for i in range(len(highs) - 1, -1, -1):
+            if i in used:
+                continue
+            group = [i]
+            ref = highs[i]
+            for j in range(i - 1, max(i - 50, -1), -1):
+                if j not in used and abs(highs[j] - ref) / ref <= tolerance:
+                    group.append(j)
+            if len(group) >= 3:
+                level = sum(highs[k] for k in group) / len(group)
+                clusters.append({
+                    'level':    level,
+                    'count':    len(group),
+                    'idx_last': max(group),
+                    'idx_first': min(group),
+                })
+                used.update(group)
+        return sorted(clusters, key=lambda x: x['idx_last'], reverse=True)
+
+    def check(self, ind, t):
+        if len(ind.closes) < 30:
+            return None, {}
+
+        closes  = ind.closes
+        highs   = ind.highs
+        lows    = ind.lows
+        opens   = ind.opens
+        price   = closes[-1]
+        rvol    = ind.get_rvol()
+
+        # Cari cluster resistance dalam 50 candle lepas
+        clusters = self._find_resistance_cluster(highs[-50:], tolerance=0.008)
+        if not clusters:
+            return None, {"Resistance cluster": False}
+
+        best_cluster = None
+        for cl in clusters:
+            level = cl['level']
+            # Cluster mesti bawah harga semasa (sudah pecah dan kini jadi support)
+            if price < level * 0.985:
+                continue
+            # Breakout: dalam 8 candle terkini, ada close ≥ 1.5% atas level
+            recent_closes = closes[-8:]
+            breakout_happened = any(c > level * 1.015 for c in recent_closes)
+            if not breakout_happened:
+                continue
+            # Retest: harga semasa dalam ±1.5% dari level
+            in_retest_zone = abs(price - level) / level <= 0.015
+            if not in_retest_zone:
+                continue
+            best_cluster = cl
+            break
+
+        if not best_cluster:
+            conditions = {
+                "Resistance cluster dijumpai": bool(clusters),
+                "Breakout berlaku (8 candle)": False,
+                "Retest zone (±1.5%)": False,
+            }
+            return None, conditions
+
+        level = best_cluster['level']
+
+        # Wick rejection pada candle semasa dan candle lepas (ambil yang terbaik)
+        best_wick_ratio = 0.0
+        for idx in [-1, -2]:  # semak candle semasa dan sebelumnya
+            if abs(idx) > len(closes):
+                continue
+            c_open  = opens[idx]
+            c_close = closes[idx]
+            c_high  = highs[idx]
+            c_low   = lows[idx]
+            body_bot = min(c_open, c_close)
+            total_range = c_high - c_low
+            lower_wick  = body_bot - c_low
+            wick_ratio  = lower_wick / total_range if total_range > 0 else 0
+            if wick_ratio > best_wick_ratio:
+                best_wick_ratio = wick_ratio
+
+        rsi     = ind.rsi
+        rvol_ok = rvol <= 1.8   # volume tidak gila = bukan fakeout
+        wick_ok = best_wick_ratio >= 0.55
+        rsi_ok  = 40 < rsi < 65
+
+        conditions = {
+            f"Resistance cluster @ ${level:.4f} [{best_cluster['count']} touch]": True,
+            f"Breakout berlaku (8 candle)":  True,
+            f"Retest zone ±1.5% [{price:.4f}]":     True,
+            f"Wick Rejection [{best_wick_ratio*100:.0f}% ≥ 55%]": wick_ok,
+            f"RVOL ≤ 1.8x [{rvol:.2f}x — tiada spike]": rvol_ok,
+            f"RSI 40–65 [{rsi:.1f}]": rsi_ok,
+        }
+
+        if all(conditions.values()):
+            structure_low = min(lows[-10:])
+            sig = {
+                'type':          'RETEST',
+                'rvol':          rvol,
+                'break_level':   level,
+                'wick_ratio':    best_wick_ratio,
+                'cluster_count': best_cluster['count'],
+                'low':           structure_low,
+                'atr':           ind.atr,
+            }
+            return sig, conditions
+
+        return None, conditions
+
 class AccumulationDetective:
     """V8.2 REBALANCE: Balanced accumulation detection.
     - 4 HARD conditions (wajib semua lulus)
@@ -707,15 +859,16 @@ def dispatch_signal(symbol, price, sig, ind, engine_type, chart_buf, daily_note,
 
     t = get_tuning()
 
-    # V8: Macro filter pre-signal
+    # MACRO: Tidak lagi BLOCK signal — hanya beri amaran dalam mesej.
+    # Terlalu banyak peluang terlepas bila BTC dominan digunakan sebagai gate keras.
+    # Trader bertanggungjawab buat keputusan sendiri berdasarkan amaran ini.
     macro_ok, macro_reason = macro_filter_pass(engine_type, t)
     macro_state = get_btc_macro_state()
     macro_btc_pct = macro_state['btc_24h_pct'] if macro_state else 0.0
+    macro_warning = ""
     if not macro_ok:
-        log_activity(f"{symbol} 🌐 Macro BLOCK: {macro_reason}")
-        bump_stat('rejected')
-        save_cooldown(symbol, float(t.get('fail_cooldown_h', 0.33)))
-        return
+        macro_warning = f"\n⚠️ <b>MACRO AMARAN:</b> <i>{macro_reason}</i>"
+        log_activity(f"{symbol} ⚠️ Macro Warning (tidak diblock): {macro_reason}")
 
     # V8: Confirmation queue untuk ACCUMULATION
     if (engine_type == 'ACCUMULATION'
@@ -755,16 +908,27 @@ def dispatch_signal(symbol, price, sig, ind, engine_type, chart_buf, daily_note,
     elif int(t.get('mode', 0)) == 2:
         mode_name = 'KETAT'
 
-    emoji, title = ("🚀", "BREAKOUT RADAR") if engine_type == 'BREAKOUT' else ("🕵️", "ACCUMULATION SNIPER")
-    desc = (f"Break: <code>${sig.get('break_level', 0):.6f}</code>"
-            if engine_type == 'BREAKOUT'
-            else f"BB Squeeze: {sig.get('bb', 0):.2f}%")
+    if engine_type == 'BREAKOUT':
+        emoji, title = "🚀", "BREAKOUT RADAR"
+    elif engine_type == 'RETEST':
+        emoji, title = "🎯", "RETEST SNIPER"
+    else:
+        emoji, title = "🕵️", "ACCUMULATION SNIPER"
 
-    # V8: Macro line untuk transparency
+    if engine_type in ('BREAKOUT', 'RETEST'):
+        lvl = sig.get('break_level', 0)
+        wick = sig.get('wick_ratio', 0)
+        desc = f"Break/Support: <code>${lvl:.6f}</code>"
+        if engine_type == 'RETEST':
+            desc += f" | Wick: {wick*100:.0f}% | {sig.get('cluster_count',0)} touch"
+    else:
+        desc = f"BB Squeeze: {sig.get('bb', 0):.2f}%"
+
+    # Macro info line — tunjuk status BTC + amaran jika berkenaan
     macro_line = ""
     if macro_state:
         arrow = "🟢" if macro_state['btc_24h_pct'] >= 0 else "🔴"
-        macro_line = f"\n🌐 <b>Macro:</b> {arrow} BTC {macro_state['btc_24h_pct']:+.2f}% (24h)"
+        macro_line = f"\n🌐 <b>Macro:</b> {arrow} BTC {macro_state['btc_24h_pct']:+.2f}% (24h){macro_warning}"
 
     # V8: Tag confirmation untuk akumulasi yang dah confirmed
     conf_tag = " ✓CONF" if (engine_type == 'ACCUMULATION' and from_pending) else ""
@@ -1068,6 +1232,12 @@ async def layer1_radar():
                                         pulse_stats['promoted'] += 1
                                         log_activity(f"{sym} ↑{change:.1f}% → Layer 2")
                                         asyncio.create_task(layer2_sniper(sym, 'BREAKOUT'))
+                                        # Tambah ke retest watchlist — pantau pullback
+                                        with _retest_lock:
+                                            _retest_watchlist[sym] = {
+                                                'price_at_promote': c,
+                                                'time': now
+                                            }
 
                     if now - last_scheduled >= 7200:
                         last_scheduled = now
@@ -1182,6 +1352,8 @@ async def _layer2_sniper_impl(symbol, scan_type, force, chat_id, user_cap, user_
 
         if scan_type == 'BREAKOUT':
             sig, conditions = BreakoutHunter().check(ind, t)
+        elif scan_type == 'RETEST':
+            sig, conditions = RetestHunter().check(ind, t)
         else:
             sig, conditions = AccumulationDetective().check(ind, t)
 
@@ -1349,18 +1521,16 @@ async def pending_signal_processor():
             now = time.time()
             for p in pendings:
                 sym = p['symbol']
-                # Expired?
                 if now > p['expiry']:
                     drop_pending(sym)
                     save_cooldown(sym, float(get_tuning().get('fail_cooldown_h', 0.33)))
                     log_activity(f"{sym} ⏰ Pending expired")
                     continue
-                # Belum cukup masa (perlu min 1H selepas detection)
                 if now - p['detect_time'] < 3600:
                     continue
                 confirmed, reason = await check_confirmation_async(dict(p))
                 if confirmed is None:
-                    continue  # retry next tick
+                    continue
                 if confirmed:
                     log_activity(f"{sym} ✓ Confirmed: {reason}")
                     await dispatch_from_pending(dict(p))
@@ -1371,6 +1541,73 @@ async def pending_signal_processor():
                     log_activity(f"{sym} ✗ Conf gagal: {reason}")
         except Exception as e:
             logger.error(f"Pending processor error: {e}")
+
+# ==========================================
+# RETEST SCANNER — Tangkap Entry Awal di Zon Support
+# ==========================================
+# Simpan rekod coin yang pernah ada momentum breakout (promoted ke Layer 2)
+# Pantau selama 4 jam untuk retest entry
+_retest_watchlist = {}  # {symbol: {'price_at_promote': float, 'time': float}}
+_retest_lock = threading.Lock()
+
+async def retest_scanner():
+    """
+    Jalan setiap 3 minit. Pantau coin dalam _retest_watchlist.
+    Bila coin pullback ke zon resistance lama → scan dengan RetestHunter.
+
+    Kenapa perlu scanner berasingan?
+    Layer 1 radar cuma promote bila ada MOMENTUM (naik 2%).
+    Retest berlaku semasa harga TURUN balik ke level — tiada momentum,
+    Layer 1 tidak akan promote. Scanner ini mengisi jurang itu.
+    """
+    global _layer2_sem
+    if _layer2_sem is None:
+        _layer2_sem = asyncio.Semaphore(int(get_tuning().get('layer2_concurrency', 5)))
+
+    logger.info("✅ [RETEST] Retest scanner started.")
+    while True:
+        await asyncio.sleep(180)  # setiap 3 minit
+        try:
+            now = time.time()
+            with _retest_lock:
+                # Buang entry lama > 4 jam
+                stale = [s for s, d in _retest_watchlist.items()
+                         if now - d['time'] > 14400]
+                for s in stale:
+                    del _retest_watchlist[s]
+                candidates = list(_retest_watchlist.items())
+
+            if not candidates:
+                continue
+
+            t = get_tuning()
+            for sym, meta in candidates:
+                if check_cooldown(sym):
+                    with _retest_lock:
+                        _retest_watchlist.pop(sym, None)
+                    continue
+
+                # Semak harga semasa dari latest_prices (tiada HTTP)
+                cur_data = latest_prices.get(sym)
+                if not cur_data:
+                    continue
+                cur_price = cur_data['c']
+                promote_price = meta['price_at_promote']
+
+                # Hanya scan kalau harga dah turun balik ≥ 1.5% dari promote price
+                # (bermakna ada pullback, mungkin ada retest)
+                pullback_pct = (promote_price - cur_price) / promote_price * 100
+                if pullback_pct < 1.5:
+                    continue
+
+                logger.debug(f"[RETEST] {sym} pullback {pullback_pct:.1f}% → scanning")
+                asyncio.create_task(
+                    layer2_sniper(sym, 'RETEST',
+                                  force=False, chat_id=None,
+                                  user_cap=1000.0, user_risk=2.0))
+
+        except Exception as e:
+            logger.error(f"[RETEST SCANNER] Error: {e}")
 
 # ==========================================
 # TRADE TRACKER — V8: SL move to BE on TP1, record exit_price for journal
@@ -2181,6 +2418,7 @@ if __name__ == "__main__":
         # V8 NEW threads
         threading.Thread(target=lambda: asyncio.run(pending_signal_processor()), daemon=True).start()
         threading.Thread(target=journal_scheduler, daemon=True).start()
+        threading.Thread(target=lambda: asyncio.run(retest_scanner()), daemon=True).start()
 
         # Layer 1 radar
         threading.Thread(target=lambda: asyncio.run(layer1_radar()), daemon=True).start()
@@ -2201,6 +2439,7 @@ if __name__ == "__main__":
         # V8 NEW threads
         threading.Thread(target=lambda: asyncio.run(pending_signal_processor()), daemon=True).start()
         threading.Thread(target=journal_scheduler, daemon=True).start()
+        threading.Thread(target=lambda: asyncio.run(retest_scanner()), daemon=True).start()
 
         threading.Thread(target=lambda: asyncio.run(layer1_radar()), daemon=True).start()
 
