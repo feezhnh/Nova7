@@ -11,6 +11,7 @@ import threading
 import logging
 import sys
 import signal
+import gc
 import io
 import requests
 import aiohttp
@@ -1152,7 +1153,7 @@ async def layer1_radar():
     global is_scanning, _layer2_sem, latest_prices, radar_history
     # Init semaphore dalam event loop ini
     t_init = get_tuning()
-    _layer2_sem = asyncio.Semaphore(int(t_init.get('layer2_concurrency', 5)))
+    _layer2_sem = asyncio.Semaphore(int(t_init.get('layer2_concurrency', 3)))
     url = "wss://stream.binance.com:9443/ws/!miniTicker@arr"
     last_snapshot = 0
     last_scheduled = 0
@@ -1237,17 +1238,21 @@ async def layer1_radar():
 
                     if now - last_scheduled >= 7200:
                         last_scheduled = now
-                        sorted_syms = sorted(latest_prices.keys(), key=lambda s: latest_prices[s]['q'], reverse=True)
-                        for s in sorted_syms[:50]:
-                            if check_cooldown(s):
-                                continue
-                            queued = False
-                            with queue_lock:
-                                if s not in layer2_queue:
-                                    layer2_queue.add(s)
-                                    queued = True
-                            if queued:
-                                asyncio.create_task(layer2_sniper(s, 'ACCUMULATION'))
+                        sorted_syms = sorted(latest_prices.keys(),
+                            key=lambda s: latest_prices[s]['q'], reverse=True)
+                        # Stagger: hantar 1 task setiap 2 saat supaya tidak queue 50 task serentak
+                        # 50 task × 2s = 100s untuk habis queue — selamat untuk RAM
+                        async def _staggered_acc_scan(syms):
+                            for s in syms:
+                                if check_cooldown(s):
+                                    continue
+                                with queue_lock:
+                                    if s not in layer2_queue:
+                                        layer2_queue.add(s)
+                                        asyncio.create_task(
+                                            layer2_sniper(s, 'ACCUMULATION'))
+                                await asyncio.sleep(2)  # 2 saat antara setiap task
+                        asyncio.create_task(_staggered_acc_scan(sorted_syms[:50]))
 
                     set_stat('radar_coins', len(latest_prices))
         except Exception as e:
@@ -1299,6 +1304,7 @@ def generate_chart_image(symbol, opens, closes, highs, lows, volumes, ema21, ema
         if fig is not None:
             plt.close(fig)
         plt.close('all')
+        gc.collect()  # paksa Python bebaskan RAM segera
 
 # ==========================================
 # LAYER 2 SNIPER — V8: Semaphore + fetch opens + fail cooldown
@@ -1550,7 +1556,7 @@ async def retest_scanner():
     """
     global _layer2_sem
     if _layer2_sem is None:
-        _layer2_sem = asyncio.Semaphore(int(get_tuning().get('layer2_concurrency', 5)))
+        _layer2_sem = asyncio.Semaphore(int(get_tuning().get('layer2_concurrency', 3)))
 
     logger.info("✅ [RETEST] Retest scanner started.")
     while True:
