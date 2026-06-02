@@ -895,11 +895,15 @@ def dispatch_signal(symbol, price, sig, ind, engine_type, chart_buf, daily_note,
     empty     = "○" * (score_max - score)
     score_bar = f"{filled}{empty}  {score}/{score_max}"
 
-    # Conditions checklist ringkas
+    # Conditions checklist ringkas — WAJIB escape HTML chars
+    # Condition names ada '<', '>', '>=' dari engine (cth: "BB Squeeze < 22%")
+    # Telegram HTML parser akan reject mesej jika ada unescaped '<' atau '>'
     cond_lines = ""
     if sig.get('conditions'):
         for cond_name, passed in sig['conditions'].items():
             short = cond_name.split('[')[0].strip()[:28]
+            # Escape HTML special chars
+            short = short.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
             cond_lines += f"{'✅' if passed else '⚠️'} {short}\n"
 
     # Desc line
