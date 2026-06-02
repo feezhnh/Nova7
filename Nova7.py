@@ -967,7 +967,7 @@ def dispatch_signal(symbol, price, sig, ind, engine_type, chart_buf, daily_note,
         save_cooldown(symbol,
                       t.get('cd_breakout', 24) if engine_type == 'BREAKOUT'
                       else t.get('cd_accumulation', 48))
-        logger.info(f"✅ [SIGNAL] {symbol} ({engine_type}{conf_tag}) dispatched.")
+        logger.info(f"✅ [SIGNAL] {symbol} ({engine_type}) dispatched.")
         log_activity(f"{symbol} 🚀 SIGNAL SENT ({engine_type})")
         bump_stat('signals_sent')
     except Exception as e:
