@@ -219,7 +219,7 @@ DEFAULT_TUNING = {
     # rsi 25-48     = cukup lebar untuk catch early reversal
     'acc_bb_width': 22.0,
     'acc_rvol': 0.8,
-    'acc_rsi_max': 48,
+    'acc_rsi_max': 40,
     'acc_rsi_min': 25,
     # Higher-low: 0=soft hint (tunjuk tapi tidak block), 1=hard required
     'acc_require_higher_low': 0,
@@ -839,6 +839,14 @@ class AccumulationDetective:
         if not gate_no_new_low:
             return None, {
                 f"No Fresh Lower Low (body) [{recent_body_low:.6f} < {prev_body_low:.6f}]": False
+            }
+
+        # ── HARD GATE 3: RVOL minimum wajib ──────────────────────────────────
+        # RVOL < threshold = tiada volume = mudah kena manipulation
+        # Signal dengan RVOL 0.09x-0.19x hampir semua kena SL
+        if rvol < rvol_min:
+            return None, {
+                f"RVOL Hard Gate >= {rvol_min}x [{rvol:.2f}x]": False
             }
 
         # ── SOFT CHECK: Recovery candle ───────────────────────────────────────
@@ -1665,7 +1673,7 @@ def compute_final_sl(entry, structure_low, atr, t):
     Pilih yang lebih jauh dari entry (lebih konservatif untuk crypto noise).
     Cap maksimum SL distance untuk elak position size mikroskopik.
     """
-    sl_atr_mult = t.get('sl_atr_mult', 1.5)
+    sl_atr_mult = t.get('sl_atr_mult', 2.0)
     sl_max_pct = t.get('sl_max_pct', 0.08)
     sl_atr = entry - (sl_atr_mult * atr) if atr > 0 else entry * 0.98
     sl_structure = structure_low * 0.995  # buffer 0.5% bawah structure
@@ -2569,8 +2577,16 @@ async def _layer2_sniper_impl(symbol, scan_type, force, chat_id, user_cap, user_
         if sig:
             # Daily confluence — info sahaja, tidak block signal
             loop = asyncio.get_event_loop()
-            daily_ok, daily_note = await loop.run_in_executor(
-                None, check_daily_confluence, symbol, closes[-1])
+            daily_filter_on = int(t.get('bo_daily_filter', 1)) == 1
+            daily_ok, daily_note = True, "Filter OFF"
+            if daily_filter_on:
+                daily_ok, daily_note = await loop.run_in_executor(
+                    None, check_daily_confluence, symbol, closes[-1])
+            if daily_filter_on and not daily_ok and not force:
+                log_activity(f"{symbol} ❌ Daily: {daily_note[:40]}")
+                bump_stat('rejected')
+                save_cooldown(symbol, float(t.get('fail_cooldown_h', 0.33)))
+                return
 
             # SMC Analysis — jalankan selepas sig confirmed
             # Guna session yang sama untuk jimat connection
