@@ -486,8 +486,8 @@ class IncrementalIndicators:
         """V8: Sekarang ambil opens juga untuk candle direction & ATR true range."""
         if len(closes) < 51: 
             return False
-        self.opens = opens[-100:]
-        self.closes, self.highs, self.lows, self.volumes = closes[-100:], highs[-100:], lows[-100:], volumes[-100:]
+        self.opens = opens[-60:]
+        self.closes, self.highs, self.lows, self.volumes = closes[-60:], highs[-60:], lows[-60:], volumes[-60:]
         # EMA initialization — each EMA must iterate from its own seed index
         self.ema21 = sum(closes[:21]) / 21
         for p in closes[21:]:
@@ -1205,6 +1205,11 @@ class SMCAnalyzer:
     def _set_cache(self, key, data):
         with _smc_cache_lock:
             _smc_cache[key] = {'d': data, 't': time.time()}
+            now = time.time()
+            stale = [k for k, v in _smc_cache.items()
+                     if now - v['t'] > 7200]
+            for k in stale:
+                del _smc_cache[k]
 
     # ── HTF fetch (1D + 4H) ───────────────────────────────────────────────
     async def _fetch_htf(self, symbol, session):
@@ -1942,12 +1947,25 @@ def dispatch_signal(symbol, price, sig, ind, engine_type, daily_note,
 # ==========================================
 # POST-MORTEM AUTOPSY (kekal, minor fix vols slice)
 # ==========================================
+_reentry_check_sem = None  # lazy init dalam async context
 async def _check_reentry_opportunity(symbol, sl_price, engine):
-    """
-    Dipanggil selepas SL hit. Semak jika ada OB/FVG di bawah SL.
-    Jika ada → masuk reentry_watchlist (7 hari TTL, max 1 re-entry).
-    Jika tiada → cooldown biasa dikekali.
-    """
+    global _reentry_check_sem
+    if _reentry_check_sem is None:
+        try:
+            _reentry_check_sem = asyncio.Semaphore(2)
+        except RuntimeError:
+            pass
+    sem = _reentry_check_sem
+    try:
+        if sem:
+            async with sem:
+                await _do_reentry_check(symbol, sl_price, engine)
+        else:
+            await _do_reentry_check(symbol, sl_price, engine)
+    except Exception as e:
+        logger.debug(f"[REENTRY] {symbol} outer error: {e}")
+
+async def _do_reentry_check(symbol, sl_price, engine):
     try:
         async with aiohttp.ClientSession() as session:
             url = (f"https://api.binance.com/api/v3/klines"
@@ -1962,7 +1980,6 @@ async def _check_reentry_opportunity(symbol, sl_price, engine):
         highs  = [float(d[2]) for d in data]
         lows   = [float(d[3]) for d in data]
 
-        # Detect OB dan FVG yang berada di bawah SL hit price
         ob  = _smc_instance._detect_order_block(opens, closes, highs, lows)
         fvg = _smc_instance._detect_fvg(highs, lows, closes)
 
@@ -2434,7 +2451,7 @@ async def layer1_radar():
                                         asyncio.create_task(
                                             layer2_sniper(s, 'SWEEP_REVERSAL'))
                                 await asyncio.sleep(1)
-                        asyncio.create_task(_staggered_acc_scan(sorted_syms[:50]))
+                        asyncio.create_task(_staggered_acc_scan(sorted_syms[:40]))
 
                     set_stat('radar_coins', len(latest_prices))
         except Exception as e:
