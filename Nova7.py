@@ -830,6 +830,13 @@ class AccumulationDetective:
                 f"No Fresh Lower Low (body) [{recent_body_low:.6f} < {prev_body_low:.6f}]": False
             }
 
+        # ── HARD GATE 3: RVOL minimum ─────────────────────────────────────────
+        # RVOL < threshold = tiada volume = mudah kena manipulation/SL
+        if rvol < rvol_min:
+            return None, {
+                f"RVOL Hard Gate >= {rvol_min}x [{rvol:.2f}x — tiada volume]": False
+            }
+
         # ── SOFT CHECK: Recovery candle ───────────────────────────────────────
         # Candle semasa hijau (close > open) = momentum shift berlaku
         # Tidak block signal — hanya dipapar dalam info box sebagai awareness
