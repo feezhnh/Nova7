@@ -2390,8 +2390,8 @@ async def layer1_radar():
                     msg = await ws.recv()
                     now = time.time()
 
-                    # ACTIVITY PULSE setiap 5 minit
-                    if now - last_pulse >= 300:
+                # ACTIVITY PULSE setiap 5 minit
+                if now - last_pulse >= 300:
                     snap = get_stats_snapshot()
                     delta_signals = snap['signals_sent'] - pulse_stats.get('prev_signals', 0)
                     delta_rejected = snap['rejected'] - pulse_stats.get('prev_rejected', 0)
