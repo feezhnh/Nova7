@@ -2390,29 +2390,29 @@ async def layer1_radar():
                     msg = await ws.recv()
                     now = time.time()
 
-                # ACTIVITY PULSE setiap 5 minit
-                if now - last_pulse >= 300:
-                    snap = get_stats_snapshot()
-                    delta_signals = snap['signals_sent'] - pulse_stats.get('prev_signals', 0)
-                    delta_rejected = snap['rejected'] - pulse_stats.get('prev_rejected', 0)
-                    logger.info(f"💓 [PULSE] Radar: {pulse_stats['seen']} coins | Promoted: {pulse_stats['promoted']} | Signals: {delta_signals} | Rejected: {delta_rejected} ")
-                    if activity_log:
-                        logger.info(f"📋 [RECENT] {' | '.join(activity_log[-5:])} ")
-                    last_pulse = now
-                    pulse_stats = {
-                        'promoted': 0, 'seen': 0,
-                        'prev_signals': snap['signals_sent'],
-                        'prev_rejected': snap['rejected']
-                    }
+            # ACTIVITY PULSE setiap 5 minit
+            if now - last_pulse >= 300:
+                snap = get_stats_snapshot()
+                delta_signals = snap['signals_sent'] - pulse_stats.get('prev_signals', 0)
+                delta_rejected = snap['rejected'] - pulse_stats.get('prev_rejected', 0)
+                logger.info(f"💓 [PULSE] Radar: {pulse_stats['seen']} coins | Promoted: {pulse_stats['promoted']} | Signals: {delta_signals} | Rejected: {delta_rejected} ")
+                if activity_log:
+                    logger.info(f"📋 [RECENT] {' | '.join(activity_log[-5:])} ")
+                last_pulse = now
+                pulse_stats = {
+                    'promoted': 0, 'seen': 0,
+                    'prev_signals': snap['signals_sent'],
+                    'prev_rejected': snap['rejected']
+                }
                     
-                    # 🛡️ FIX OOM: Prune data symbol yang tiada aktiviti > 1 jam (3600 saat)
-                    if now - last_pulse >= 3600:
-                        stale_syms = [sym for sym, data in latest_prices.items() if now - data.get('t', 0) > 3600]
-                        for sym_prune in stale_syms:
-                            latest_prices.pop(sym_prune, None)
-                            radar_history.pop(sym_prune, None)
-                        if stale_syms:
-                            logger.info(f"🧹 [MEMORY] Pruned {len(stale_syms)} stale symbols from radar")
+                # 🛡️ FIX OOM: Prune data symbol yang tiada aktiviti > 1 jam (3600 saat)
+                if now - last_pulse >= 3600:
+                stale_syms = [sym for sym, data in latest_prices.items() if now - data.get('t', 0) > 3600]
+                for sym_prune in stale_syms:
+                    latest_prices.pop(sym_prune, None)
+                    radar_history.pop(sym_prune, None)
+                if stale_syms:
+                    logger.info(f"🧹 [MEMORY] Pruned {len(stale_syms)} stale symbols from radar")
 
                     if now - last_snapshot < 3.0: 
                         continue
