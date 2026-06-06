@@ -233,10 +233,10 @@ DEFAULT_TUNING = {
     # Default 0: tidak block, hanya tunjuk amaran dalam mesej
     # Set 1 untuk pasaran bearish — elak counter-trend entry
     'htf_block_on_bear': 0,
-    # Concurrency — MESTI 3 untuk Render Free 512MB
-    # 5 task × ~80MB = 400MB + base 100MB = OOM
-    # 3 task × ~80MB = 240MB + base 100MB = 340MB (selamat)
-    'layer2_concurrency': 3,
+    # Concurrency — MESTI 2 untuk Render Free 512MB (Safety Net)
+    # 3 task × ~80MB = 240MB + base 100MB = 340MB (masih berisiko OOM bila peak)
+    # 2 task × ~80MB = 160MB + base 100MB = 260MB (SANGAT SELAMAT)
+    'layer2_concurrency': 2,
 }
 
 def init_db():
@@ -1220,6 +1220,18 @@ class SMCAnalyzer:
     def _set_cache(self, key, data):
         with _smc_cache_lock:
             _smc_cache[key] = {'d': data, 't': time.time()}
+            
+            # 🛡️ FIX OOM: Bersihkan cache yang expired (> 1 jam)
+            now = time.time()
+            expired_keys = [k for k, v in _smc_cache.items() if now - v['t'] > 3600]
+            for k in expired_keys:
+                del _smc_cache[k]
+                
+            # Hard limit: Jika cache > 300 items, buang 150 item paling lama
+            if len(_smc_cache) > 300:
+                sorted_keys = sorted(_smc_cache.keys(), key=lambda k: _smc_cache[k]['t'])
+                for k in sorted_keys[:150]:
+                    del _smc_cache[k]
 
     # ── HTF fetch (1D + 4H) ───────────────────────────────────────────────
     async def _fetch_htf(self, symbol, session):
@@ -2361,6 +2373,7 @@ async def layer1_radar():
     last_snapshot = 0
     last_scheduled = 0
     last_pulse = 0
+    last_gc_time = 0  # 🛡️ FIX OOM: Tracker untuk Garbage Collection
     pulse_stats = {'promoted': 0, 'seen': 0}
     while True:
         if not is_scanning:
@@ -2379,18 +2392,27 @@ async def layer1_radar():
 
                     # ACTIVITY PULSE setiap 5 minit
                     if now - last_pulse >= 300:
-                        snap = get_stats_snapshot()
-                        delta_signals  = snap['signals_sent'] - pulse_stats.get('prev_signals', 0)
-                        delta_rejected = snap['rejected'] - pulse_stats.get('prev_rejected', 0)
-                        logger.info(f"💓 [PULSE] Radar: {pulse_stats['seen']} coins | Promoted: {pulse_stats['promoted']} | Signals: {delta_signals} | Rejected: {delta_rejected}")
-                        if activity_log:
-                            logger.info(f"📋 [RECENT] {' | '.join(activity_log[-5:])}")
-                        last_pulse = now
-                        pulse_stats = {
-                            'promoted': 0, 'seen': 0,
-                            'prev_signals': snap['signals_sent'],
-                            'prev_rejected': snap['rejected']
-                        }
+                    snap = get_stats_snapshot()
+                    delta_signals = snap['signals_sent'] - pulse_stats.get('prev_signals', 0)
+                    delta_rejected = snap['rejected'] - pulse_stats.get('prev_rejected', 0)
+                    logger.info(f"💓 [PULSE] Radar: {pulse_stats['seen']} coins | Promoted: {pulse_stats['promoted']} | Signals: {delta_signals} | Rejected: {delta_rejected} ")
+                    if activity_log:
+                        logger.info(f"📋 [RECENT] {' | '.join(activity_log[-5:])} ")
+                    last_pulse = now
+                    pulse_stats = {
+                        'promoted': 0, 'seen': 0,
+                        'prev_signals': snap['signals_sent'],
+                        'prev_rejected': snap['rejected']
+                    }
+                    
+                    # 🛡️ FIX OOM: Prune data symbol yang tiada aktiviti > 1 jam (3600 saat)
+                    if now - last_pulse >= 3600:
+                        stale_syms = [sym for sym, data in latest_prices.items() if now - data.get('t', 0) > 3600]
+                        for sym_prune in stale_syms:
+                            latest_prices.pop(sym_prune, None)
+                            radar_history.pop(sym_prune, None)
+                        if stale_syms:
+                            logger.info(f"🧹 [MEMORY] Pruned {len(stale_syms)} stale symbols from radar")
 
                     if now - last_snapshot < 3.0: 
                         continue
@@ -2406,7 +2428,7 @@ async def layer1_radar():
                         if base in KILL_LIST: 
                             continue
                         c, q = float(tk['c']), float(tk['q'])
-                        latest_prices[sym] = {'c': c, 'q': q}
+                        latest_prices[sym] = {'c': c, 'q': q, 't': now}  # 🛡️ FIX OOM: Tambah timestamp
                         pulse_stats['seen'] += 1
 
                         if sym not in radar_history: 
@@ -2466,10 +2488,16 @@ async def layer1_radar():
                                 await asyncio.sleep(1)
                         asyncio.create_task(_staggered_acc_scan(sorted_syms[:50]))
 
-                    set_stat('radar_coins', len(latest_prices))
-        except Exception as e:
-            logger.error(f"❌ [RADAR] Disconnected: {e}. Reconnecting...")
-            await asyncio.sleep(5)
+                set_stat('radar_coins', len(latest_prices))
+                
+                # 🛡️ FIX OOM: Paksa Garbage Collection setiap 10 minit (600 saat)
+                if now - last_gc_time >= 600:
+                    gc.collect()
+                    last_gc_time = now
+                    
+    except Exception as e:
+        logger.error(f"❌ [RADAR] Disconnected: {e}. Reconnecting... ")
+        await asyncio.sleep(5)
 
 # ==========================================
 # LAYER 2 SNIPER — V8: Semaphore + fetch opens + fail cooldown
@@ -2792,7 +2820,7 @@ async def retest_scanner():
 # Guard terhadap duplicate SL/TP notification.
 # msg_id dimasukkan serta-merta bila status ditetapkan,
 # sebelum DB update — elak iterasi 5-saat berikut proses semula.
-_notified_trades: set = set()
+_notified_trades = {}  # 🛡️ FIX OOM: Tukar dari set ke dict untuk simpan timestamp)
 
 async def trade_tracker():
     """
@@ -2837,7 +2865,15 @@ async def trade_tracker():
                 key = f"{t['msg_id']}:{new_st}"
                 if key in _notified_trades:
                     return True   # sudah diproses
-                _notified_trades.add(key)
+            
+                _notified_trades[key] = time.time()
+            
+                # 🛡️ FIX OOM: Buang entry yang sudah > 1 jam
+                now_gc = time.time()
+                old_keys = [k for k, v in _notified_trades.items() if now_gc - v > 3600]
+                for k in old_keys:
+                    del _notified_trades[k]
+                
                 return False
 
             if price <= t['sl'] and status not in ['STOP_LOSS', 'COMPLETED']:
