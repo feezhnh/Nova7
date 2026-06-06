@@ -2404,8 +2404,8 @@ async def layer1_radar():
                 'prev_rejected': snap['rejected']
             }
                     
-                # 🛡️ FIX OOM: Prune data symbol yang tiada aktiviti > 1 jam (3600 saat)
-                if now - last_pulse >= 3600:
+            # 🛡️ FIX OOM: Prune data symbol yang tiada aktiviti > 1 jam (3600 saat)
+            if now - last_pulse >= 3600:
                 stale_syms = [sym for sym, data in latest_prices.items() if now - data.get('t', 0) > 3600]
                 for sym_prune in stale_syms:
                     latest_prices.pop(sym_prune, None)
