@@ -2364,54 +2364,66 @@ def log_activity(msg):
     logger.info(f"🎯 [SNIPER] {msg}")
 
 async def layer1_radar():
-    """V8: Tambah semaphore + fail-cooldown untuk concurrency control."""
     global is_scanning, _layer2_sem, latest_prices, radar_history
+    
     # Init semaphore dalam event loop ini
     t_init = get_tuning()
-    _layer2_sem = asyncio.Semaphore(int(t_init.get('layer2_concurrency', 3)))
+    _layer2_sem = asyncio.Semaphore(int(t_init.get('layer2_concurrency', 2)))  # 🛡️ FIX OOM: Turun ke 2 untuk Render Free
+    
     url = "wss://stream.binance.com:9443/ws/!miniTicker@arr"
     last_snapshot = 0
     last_scheduled = 0
     last_pulse = 0
     last_gc_time = 0  # 🛡️ FIX OOM: Tracker untuk Garbage Collection
     pulse_stats = {'promoted': 0, 'seen': 0}
+    
     while True:
         if not is_scanning:
             await asyncio.sleep(5)
             continue
+            
         try:
             async with websockets.connect(url, ping_interval=20, max_size=10**7) as ws:
-                logger.info("✅ [RADAR] Layer 1 Connected. Scanning Mid-Caps...")
+                logger.info("✅ [RADAR] Layer 1 Connected. Scanning Mid-Caps... ")
                 if bot and ADMIN_CHAT_ID:
-                    bot.send_message(ADMIN_CHAT_ID, "🟢 <b>HELLO, NOVA7 v8 NOW ACTIVE.</b>\n2-Layer Radar + Macro Filter + Confirmation Queue Online.", parse_mode="HTML")
+                    bot.send_message(ADMIN_CHAT_ID, "🟢 <b>HELLO, NOVA7 v8 NOW ACTIVE.</b>\n2-Layer Radar + Macro Filter + Confirmation Queue Online. ", parse_mode="HTML")
+                
                 while True:
-                    if not is_scanning: 
+                    if not is_scanning:
                         break
+                        
                     msg = await ws.recv()
                     now = time.time()
-        # ACTIVITY PULSE setiap 5 minit
-        if now - last_pulse >= 300:
-            snap = get_stats_snapshot()
-            delta_signals = snap['signals_sent'] - pulse_stats.get('prev_signals', 0)
-            delta_rejected = snap['rejected'] - pulse_stats.get('prev_rejected', 0)
-            logger.info(f"💓 [PULSE] Radar: {pulse_stats['seen']} coins | Promoted: {pulse_stats['promoted']} | Signals: {delta_signals} | Rejected: {delta_rejected} ")
-            if activity_log:
-                logger.info(f"📋 [RECENT] {' | '.join(activity_log[-5:])} ")
-            last_pulse = now
-            pulse_stats = {
-                'promoted': 0, 'seen': 0,
-                'prev_signals': snap['signals_sent'],
-                'prev_rejected': snap['rejected']
-            }
                     
-            # 🛡️ FIX OOM: Prune data symbol yang tiada aktiviti > 1 jam (3600 saat)
-            if now - last_pulse >= 3600:
-                stale_syms = [sym for sym, data in latest_prices.items() if now - data.get('t', 0) > 3600]
-                for sym_prune in stale_syms:
-                    latest_prices.pop(sym_prune, None)
-                    radar_history.pop(sym_prune, None)
-                if stale_syms:
-                    logger.info(f"🧹 [MEMORY] Pruned {len(stale_syms)} stale symbols from radar")
+                    # 🛡️ FIX OOM: Paksa Garbage Collection setiap 10 minit (600 saat)
+                    if now - last_gc_time >= 600:
+                        gc.collect()
+                        last_gc_time = now
+
+                    # ACTIVITY PULSE setiap 5 minit
+                    if now - last_pulse >= 300:
+                        snap = get_stats_snapshot()
+                        delta_signals = snap['signals_sent'] - pulse_stats.get('prev_signals', 0)
+                        delta_rejected = snap['rejected'] - pulse_stats.get('prev_rejected', 0)
+                        logger.info(f"💓 [PULSE] Radar: {pulse_stats['seen']} coins | Promoted: {pulse_stats['promoted']} | Signals: {delta_signals} | Rejected: {delta_rejected} ")
+                        if activity_log:
+                            logger.info(f"📋 [RECENT] {' | '.join(activity_log[-5:])} ")
+                        
+                        last_pulse = now
+                        pulse_stats = {
+                            'promoted': 0, 
+                            'seen': 0,
+                            'prev_signals': snap['signals_sent'],
+                            'prev_rejected': snap['rejected']
+                        }
+                        
+                        # 🛡️ FIX OOM: Prune data symbol yang tiada aktiviti > 1 jam (3600 saat)
+                        stale_syms = [sym for sym, data in latest_prices.items() if now - data.get('t', 0) > 3600]
+                        for sym_prune in stale_syms:
+                            latest_prices.pop(sym_prune, None)
+                            radar_history.pop(sym_prune, None)
+                        if stale_syms:
+                            logger.info(f"🧹 [MEMORY] Pruned {len(stale_syms)} stale symbols from radar")
 
                     if now - last_snapshot < 3.0: 
                         continue
@@ -2427,7 +2439,9 @@ async def layer1_radar():
                         if base in KILL_LIST: 
                             continue
                         c, q = float(tk['c']), float(tk['q'])
-                        latest_prices[sym] = {'c': c, 'q': q, 't': now}  # 🛡️ FIX OOM: Tambah timestamp
+                        
+                        # 🛡️ FIX OOM: Tambah timestamp 't'
+                        latest_prices[sym] = {'c': c, 'q': q, 't': now}
                         pulse_stats['seen'] += 1
 
                         if sym not in radar_history: 
@@ -2443,17 +2457,18 @@ async def layer1_radar():
                                 change = ((c - past_c) / past_c) * 100
                                 momentum = t.get('radar_momentum', 2.0)
                                 min_vol = t.get('radar_min_vol', 12_000_000)
-                                # FIX: check cooldown SEBELUM promote — elak spam repeat
+                                
                                 if change >= momentum and q > min_vol and not check_cooldown(sym):
                                     with queue_lock:
                                         if sym not in layer2_queue:
                                             layer2_queue.add(sym)
                                             promote_breakout = True
+                                    
                                     if promote_breakout:
                                         pulse_stats['promoted'] += 1
-                                        log_activity(f"{sym} ↑{change:.1f}% → Layer 2")
+                                        log_activity(f"{sym} ↑{change:.1f}% → Layer 2 ")
                                         asyncio.create_task(layer2_sniper(sym, 'BREAKOUT'))
-                                        # Tambah ke retest watchlist — pantau pullback
+                                        
                                         with _retest_lock:
                                             _retest_watchlist[sym] = {
                                                 'price_at_promote': c,
@@ -2462,10 +2477,8 @@ async def layer1_radar():
 
                     if now - last_scheduled >= 7200:
                         last_scheduled = now
-                        sorted_syms = sorted(latest_prices.keys(),
-                            key=lambda s: latest_prices[s]['q'], reverse=True)
-                        # Stagger: hantar 1 task setiap 2 saat supaya tidak queue 50 task serentak
-                        # 50 task × 2s = 100s untuk habis queue — selamat untuk RAM
+                        sorted_syms = sorted(latest_prices.keys(), key=lambda s: latest_prices[s]['q'], reverse=True)
+                        
                         async def _staggered_acc_scan(syms):
                             for s in syms:
                                 if check_cooldown(s):
@@ -2473,30 +2486,23 @@ async def layer1_radar():
                                 with queue_lock:
                                     if s not in layer2_queue:
                                         layer2_queue.add(s)
-                                        asyncio.create_task(
-                                            layer2_sniper(s, 'ACCUMULATION'))
+                                        asyncio.create_task(layer2_sniper(s, 'ACCUMULATION'))
                                 await asyncio.sleep(2)
-                                # Sweep reversal juga discan untuk coin yang sama
-                                # Stagger 1 saat selepas accumulation scan
+                                
                                 with queue_lock:
                                     sweep_key = f"{s}_SWEEP"
                                     if sweep_key not in layer2_queue:
                                         layer2_queue.add(sweep_key)
-                                        asyncio.create_task(
-                                            layer2_sniper(s, 'SWEEP_REVERSAL'))
+                                        asyncio.create_task(layer2_sniper(s, 'SWEEP_REVERSAL'))
                                 await asyncio.sleep(1)
+                                
                         asyncio.create_task(_staggered_acc_scan(sorted_syms[:50]))
 
-                set_stat('radar_coins', len(latest_prices))
-                
-                # 🛡️ FIX OOM: Paksa Garbage Collection setiap 10 minit (600 saat)
-                if now - last_gc_time >= 600:
-                    gc.collect()
-                    last_gc_time = now
+                    set_stat('radar_coins', len(latest_prices))
                     
-    except Exception as e:
-        logger.error(f"❌ [RADAR] Disconnected: {e}. Reconnecting... ")
-        await asyncio.sleep(5)
+        except Exception as e:
+            logger.error(f"❌ [RADAR] Disconnected: {e}. Reconnecting... ")
+            await asyncio.sleep(5)
 
 # ==========================================
 # LAYER 2 SNIPER — V8: Semaphore + fetch opens + fail cooldown
