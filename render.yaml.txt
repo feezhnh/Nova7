@@ -1,0 +1,67 @@
+services:
+  - type: web
+    name: nova7-v8-optimized
+    runtime: python
+    pythonVersion: "3.10"
+    
+    # Build settings
+    buildCommand: >
+      pip install --upgrade pip &&
+      pip install -r requirements.txt
+    
+    # Start command
+    startCommand: >
+      python Nova7_VER1_OPTIMIZED_OOM_FIX.py
+    
+    # Environment variables
+    envVars:
+      # Telegram Configuration (required)
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false  # Generate di Render Dashboard
+      
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      
+      - key: ADMIN_CHAT_ID
+        sync: false
+      
+      # Supabase Configuration (optional - untuk persistent storage)
+      - key: SUPABASE_URL
+        sync: false
+      
+      - key: SUPABASE_KEY
+        sync: false
+      
+      # Python settings (untuk optimization)
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      
+      - key: PYTHONOPTIMIZE
+        value: "2"  # Enable optimizations
+    
+    # Scale settings (free tier)
+    plan: free  # Limited to 0.5 CPU, 512MB RAM
+    
+    # Health check (optional, akan restart jika down)
+    healthCheckPath: /
+    healthCheckStartupDelay: 30
+    healthCheckInterval: 300
+    
+    # Auto-restart on crash
+    autoDeploy: true
+    
+    # Domain (optional)
+    domains:
+      - nova7-v8.onrender.com
+
+envVars:
+  # Global env vars (apply to all services)
+  - key: ENVIRONMENT
+    value: production
+
+# Database (optional - if you want persistent PostgreSQL)
+# databases:
+#   - name: nova7-db
+#     databaseName: nova7
+#     user: nova7user
+#     region: oregon  # same as service region
