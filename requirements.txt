@@ -1,14 +1,5 @@
-Flask==2.3.2
-pyTelegramBotAPI==4.13.0
+Flask==2.3.3
+pyTelegramBotAPI==4.14.0
 requests==2.31.0
-aiohttp==3.8.5
-websockets==11.0.3
-
-# Optional - untuk memory monitoring (uncomment jika perlu)
-# psutil==5.9.5
-
-# Database
-# sqlite3 is built-in dengan Python
-
-# Jangan tambah yang lain! Setiap package = memory overhead
-# Minimal = maximum stability pada free tier
+python-dotenv==1.0.0
+gunicorn==21.2.0
