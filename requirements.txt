@@ -1,5 +1,23 @@
-Flask==2.3.3
-pyTelegramBotAPI==4.14.0
-requests==2.31.0
-gunicorn==21.2.0
-psutil==5.9.5
+# Nova7 v8 — OOM-fixed build
+# Render Free Tier (512MB RAM) — setiap pakej dipilih untuk jejak memori minimum
+
+# ── Web framework (WSGI, tiada dev extras) ──────────────────────────────
+flask==3.0.3
+gunicorn==22.0.0          # Production WSGI — JANGAN guna flask dev server di Render
+
+# ── Telegram bot ─────────────────────────────────────────────────────────
+pyTelegramBotAPI==4.21.0
+
+# ── Async HTTP + WebSocket ────────────────────────────────────────────────
+aiohttp==3.9.5            # Async HTTP client untuk Binance API
+websockets==12.0          # WebSocket untuk Binance stream (max_size dikurangkan ke 2MB)
+
+# ── Sync HTTP (Supabase + BTC macro) ─────────────────────────────────────
+requests==2.32.3
+
+# ── Standard library tambahan (tiada install diperlukan) ──────────────────
+# sqlite3  — built-in
+# asyncio  — built-in
+# threading — built-in
+# queue    — built-in  ← BAHARU: digunakan untuk Supabase write queue
+# gc       — built-in
